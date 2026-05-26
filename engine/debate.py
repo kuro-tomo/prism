@@ -27,7 +27,7 @@ class DebateResult:
 
 def run_debate(question: str, memory_context: str = "") -> DebateResult:
     """
-    擬似フィーラの中核関数。
+    ARIFの中核関数。
     実装は設計書確定後に行う。
     """
     raise NotImplementedError("設計諮問（/advisor）後に実装")

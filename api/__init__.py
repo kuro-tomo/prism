@@ -1,1 +1,1 @@
-# 擬似フィーラ — FastAPI サーバー
+# ARIF — FastAPI サーバー

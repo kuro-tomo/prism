@@ -11,7 +11,7 @@ TODO（/advisor 諮問後に実装）
 
 from fastapi import FastAPI
 
-app = FastAPI(title="擬似フィーラ API", version="0.1.0")
+app = FastAPI(title="ARIF API", version="0.1.0")
 
 
 @app.get("/health")
