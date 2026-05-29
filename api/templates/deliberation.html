@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+{% block title %}PRISM — {{ title }}{% endblock %}
+{% block content %}
+
+<!-- ヘッダー情報 -->
+<div class="deliberation-header">
+  <h2>{{ title }}</h2>
+  <p class="deliberation-question">「{{ question }}」</p>
+  <div class="deliberation-meta">
+    {% set mode_labels = {"speed": "早足", "standard": "常足", "deep": "熟考"} %}
+    <span class="mode-badge">{{ mode_labels.get(mode, mode) }}</span>
+  </div>
+</div>
+
+<!-- ステータスバー + 音声トグル -->
+<div class="status-row">
+  <div id="status-bar" class="status-bar">接続中…</div>
+  <button type="button" id="voice-btn" class="voice-toggle" title="音声読み上げ ON/OFF" aria-pressed="false">
+    🔇 音声OFF
+  </button>
+</div>
+
+<!-- Round 1 -->
+<div class="round-section" id="round1-section">
+  <div class="round-heading">Round 1 — 独立意見</div>
+  <div class="agents-grid" id="round1-grid">
+    <div class="agent-card" id="agent-strategist-r1" style="--agent-color:#818cf8">
+      <h4>経営戦略家</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-cfo-r1" style="--agent-color:#fbbf24">
+      <h4>CFO・財務</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-engineer-r1" style="--agent-color:#34d399">
+      <h4>技術エンジニア</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-market-r1" style="--agent-color:#60a5fa">
+      <h4>市場アナリスト</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-risk-r1" style="--agent-color:#f87171">
+      <h4>リスク・法務</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+  </div>
+  <div id="round-summary-1" class="round-summary" style="display:none"></div>
+</div>
+
+<!-- Round 2 -->
+<div class="round-section" id="round2-section" style="display:none">
+  <div class="round-heading">Round 2 — 反論・深掘り</div>
+  <div class="agents-grid" id="round2-grid">
+    <div class="agent-card" id="agent-strategist-r2" style="--agent-color:#818cf8">
+      <h4>経営戦略家</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-cfo-r2" style="--agent-color:#fbbf24">
+      <h4>CFO・財務</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-engineer-r2" style="--agent-color:#34d399">
+      <h4>技術エンジニア</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-market-r2" style="--agent-color:#60a5fa">
+      <h4>市場アナリスト</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+    <div class="agent-card" id="agent-risk-r2" style="--agent-color:#f87171">
+      <h4>リスク・法務</h4>
+      <div class="agent-content waiting">待機中…</div>
+    </div>
+  </div>
+  <div id="round-summary-2" class="round-summary" style="display:none"></div>
+</div>
+
+<!-- 統合：第三の解 -->
+<div id="synthesis-panel"></div>
+
+<!-- プリモーテム -->
+<div id="premortem-panel"></div>
+
+<!-- 完了バナー -->
+<div id="complete-banner"></div>
+
+<script>
+(function () {
+  const STREAM_URL = {{ stream_url | tojson }};
+
+  // ─── エージェントID → カード色・ラベル ───
+  const AGENT_META = {
+    strategist: { label: '経営戦略家',    color: '#818cf8' },
+    cfo:        { label: 'CFO・財務',     color: '#fbbf24' },
+    engineer:   { label: '技術エンジニア', color: '#34d399' },
+    market:     { label: '市場アナリスト', color: '#60a5fa' },
+    risk:       { label: 'リスク・法務',  color: '#f87171' },
+  };
+
+  // ─── ステータス更新 ───
+  function setStatus(msg) {
+    document.getElementById('status-bar').textContent = msg;
+  }
+
+  // ─── 音声読み上げ（TTS）Web Speech API ───────────────────
+  var voiceOn = false;
+  var _jaVoice = null;
+  var _ttsQueue = [];        // 再生待ちキュー: { text, rate }
+  var _ttsSpeaking = false;  // 再生中フラグ（並列 agent_done の上書き防止）
+
+  // 日本語音声を取得（非同期ロード対応）
+  function _loadJaVoice() {
+    if (!window.speechSynthesis) return;
+    var voices = window.speechSynthesis.getVoices();
+    _jaVoice = voices.find(function (v) { return v.lang.startsWith('ja'); }) || null;
+  }
+  if (window.speechSynthesis) {
+    _loadJaVoice();
+    window.speechSynthesis.onvoiceschanged = _loadJaVoice;
+  }
+
+  // キュードレイン: onend コールバックで連鎖再生
+  function _drainQueue() {
+    if (!voiceOn || !window.speechSynthesis || _ttsQueue.length === 0) {
+      _ttsSpeaking = false;
+      return;
+    }
+    _ttsSpeaking = true;
+    var item = _ttsQueue.shift();
+    var utt = new SpeechSynthesisUtterance(item.text);
+    utt.lang = 'ja-JP';
+    utt.rate = item.rate || 1.05;
+    if (_jaVoice) utt.voice = _jaVoice;
+    utt.onend = _drainQueue;  // 再生完了後に次の項目を処理
+    window.speechSynthesis.speak(utt);
+  }
+
+  // エンキュー: 並列発火されても発話が上書きされない
+  function speakText(text, rate) {
+    if (!voiceOn || !window.speechSynthesis || !text) return;
+    _ttsQueue.push({ text: text, rate: rate || 1.05 });
+    if (!_ttsSpeaking) _drainQueue();
+  }
+
+  // 音声トグルボタン
+  var voiceBtn = document.getElementById('voice-btn');
+  if (voiceBtn && window.speechSynthesis) {
+    voiceBtn.style.display = 'inline-flex';
+    voiceBtn.addEventListener('click', function () {
+      voiceOn = !voiceOn;
+      voiceBtn.textContent = voiceOn ? '🔊 音声ON' : '🔇 音声OFF';
+      voiceBtn.classList.toggle('voice-active', voiceOn);
+      voiceBtn.setAttribute('aria-pressed', String(voiceOn));
+      if (!voiceOn) {
+        _ttsQueue = [];         // キューをクリア
+        _ttsSpeaking = false;
+        window.speechSynthesis.cancel();
+      }
+    });
+  }
+
+  // ─── エージェントカード更新 ───
+  function updateAgentCard(agentId, round, content) {
+    const card = document.getElementById('agent-' + agentId + '-r' + round);
+    if (!card) return;
+    const contentEl = card.querySelector('.agent-content');
+    if (!contentEl) return;
+    // 先頭100文字のみ表示（カード内はプレビュー）
+    contentEl.textContent = content;
+    contentEl.classList.remove('waiting');
+    card.classList.add('populated');
+    card.style.setProperty('--agent-color', (AGENT_META[agentId] || {}).color || '#818cf8');
+  }
+
+  // ─── Round 2 表示 ───
+  function showRound2() {
+    const sec = document.getElementById('round2-section');
+    if (sec) sec.style.display = '';
+  }
+
+  // ─── ラウンドサマリー ───
+  function updateRoundSummary(round, text) {
+    const el = document.getElementById('round-summary-' + round);
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+  }
+
+  // ─── 第三の解レンダリング ───
+  function renderSynthesis(s) {
+    if (!s) return;
+    const el = document.getElementById('synthesis-panel');
+    if (!el) return;
+
+    let html = '<div class="synthesis-panel">';
+    html += '<div class="panel-label">第三の解</div>';
+    html += '<div class="synthesis-conclusion">' + esc(s.conclusion || '') + '</div>';
+
+    // 各エージェントの論拠
+    if (s.rationale && s.rationale.length) {
+      html += '<div class="synthesis-section-title">論拠</div>';
+      html += '<div class="rationale-list">';
+      s.rationale.forEach(function(r) {
+        html += '<div class="rationale-item">';
+        html += '<span class="rationale-agent">' + esc(r.agent || '') + '</span>';
+        html += '<span>' + esc(r.point || '') + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // 短期アクション
+    if (s.actions_short_term && s.actions_short_term.length) {
+      html += '<div class="synthesis-section-title">短期アクション（即実行）</div>';
+      html += '<ul class="action-list">';
+      s.actions_short_term.forEach(function(a) {
+        html += '<li>' + esc(a) + '</li>';
+      });
+      html += '</ul>';
+    }
+
+    // 中期アクション
+    if (s.actions_mid_term && s.actions_mid_term.length) {
+      html += '<div class="synthesis-section-title">中期ロードマップ</div>';
+      html += '<ul class="action-list">';
+      s.actions_mid_term.forEach(function(a) {
+        html += '<li>' + esc(a) + '</li>';
+      });
+      html += '</ul>';
+    }
+
+    // 少数意見
+    if (s.minority_view) {
+      html += '<div class="minority-note">少数意見：' + esc(s.minority_view) + '</div>';
+    }
+
+    // Guilford スコア
+    if (s.guilford_scores) {
+      const g = s.guilford_scores;
+      html += '<div class="synthesis-section-title">創造性評価（Guilford）</div>';
+      html += '<div class="guilford-grid">';
+      [['fluency','流暢性'],['flexibility','柔軟性'],['elaboration','精緻性'],['originality','独自性']].forEach(function(p) {
+        html += '<div class="guilford-item">';
+        html += '<div class="guilford-score">' + (g[p[0]] || '-') + '/5</div>';
+        html += '<div class="guilford-label">' + p[1] + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // 前提条件
+    if (s.assumptions && s.assumptions.length) {
+      html += '<div class="synthesis-section-title">主要前提</div>';
+      html += '<ul class="action-list">';
+      s.assumptions.forEach(function(a) {
+        html += '<li>' + esc(a) + '</li>';
+      });
+      html += '</ul>';
+    }
+
+    // Minor-1 修正: F-015 免責文言は無条件表示（disclaimer が null でもフォールバック）
+    html += '<div class="disclaimer-text">' + esc(s.disclaimer ||
+      '本提案は PRISM が熟議を経て導出した最善の一手です。最終判断は社長が下されるものです。') + '</div>';
+
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  // ─── プリモーテムレンダリング ───
+  function renderPreMortem(scenarios) {
+    if (!scenarios || !scenarios.length) return;
+    const el = document.getElementById('premortem-panel');
+    if (!el) return;
+    let html = '<div class="premortem-panel">';
+    html += '<div class="panel-label">失敗シナリオ（Pre-mortem）</div>';
+    html += '<ul class="scenario-list">';
+    scenarios.forEach(function(s) {
+      html += '<li>' + esc(typeof s === 'string' ? s : JSON.stringify(s)) + '</li>';
+    });
+    html += '</ul></div>';
+    el.innerHTML = html;
+  }
+
+  // ─── 完了バナー ───
+  function renderComplete(costUsd) {
+    const el = document.getElementById('complete-banner');
+    if (!el) return;
+    const cost = typeof costUsd === 'number' ? costUsd.toFixed(4) : costUsd;
+    el.innerHTML =
+      '<div class="complete-banner">✅ 熟議完了' +
+      '<span class="cost-note">コスト $' + esc(String(cost || '0')) + '</span></div>';
+    setStatus('熟議が完了いたしました。');
+  }
+
+  // ─── XSS防止エスケープ ───
+  function esc(str) {
+    return String(str)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  // ─── EventSource 接続 ───
+  var es = new EventSource(STREAM_URL);
+
+  // 名前付きイベントを個別にリッスン
+  var EVENTS = [
+    'session_start','round_start','agent_done','round_summary',
+    'synthesis_done','pre_mortem_done','complete','agent_error',
+    'agent_content_delta','synthesis_delta',
+  ];
+
+  function dispatch(type, rawData) {
+    var data;
+    try { data = JSON.parse(rawData); } catch(e) { return; }
+
+    switch(type) {
+      case 'session_start':
+        setStatus('熟議を開始いたします…');
+        speakText('熟議を開始します。');
+        break;
+      case 'round_start':
+        setStatus('Round ' + data.round + ' 進行中');
+        if (data.round === 2) {
+          showRound2();
+          speakText('Round ' + data.round + '、反論・深掘りフェーズです。');
+        }
+        break;
+      case 'agent_done': {
+        updateAgentCard(data.agent_id, data.round, data.content || '');
+        // TTS: エージェントラベル＋発言冒頭120文字を読み上げ
+        var agMeta = AGENT_META[data.agent_id] || {};
+        var preview = (data.content || '').substring(0, 120);
+        speakText((agMeta.label ? agMeta.label + '。' : '') + preview, 1.05);
+        break;
+      }
+      case 'round_summary': {
+        // Critical-3 修正: RoundSummaryEvent は diversity_score_phi・consensus_risk フィールド（summary なし）
+        var phi = typeof data.diversity_score_phi === 'number'
+          ? data.diversity_score_phi.toFixed(2) : '?';
+        var warn = data.consensus_risk ? ' ⚠ 合意リスク検出' : '';
+        updateRoundSummary(data.round, '多様性スコア Φ=' + phi + warn);
+        break;
+      }
+      case 'synthesis_done':
+        renderSynthesis(data.synthesis);
+        setStatus('第三の解を統合中…');
+        // TTS: 第三の解の結論を読み上げ（重要な結論はゆっくり読む: rate=0.98）
+        if (data.synthesis && data.synthesis.conclusion) {
+          speakText('第三の解。' + data.synthesis.conclusion, 0.98);
+        }
+        break;
+      case 'pre_mortem_done':
+        // Critical-2 修正: PreMortemDoneEvent は failure_scenarios フィールド（synthesis なし）
+        renderPreMortem(data.failure_scenarios || []);
+        break;
+      case 'complete':
+        renderComplete(data.total_cost_usd);
+        es.close();
+        speakText('熟議が完了しました。');
+        break;
+      case 'agent_error':
+        setStatus('⚠ エラー：' + (data.message || '不明'));
+        break;
+    }
+  }
+
+  EVENTS.forEach(function(evtName) {
+    es.addEventListener(evtName, function(e) {
+      dispatch(evtName, e.data);
+    });
+  });
+
+  // fallback: 名前なしメッセージ
+  es.addEventListener('message', function(e) {
+    try {
+      var data = JSON.parse(e.data);
+      if (data.event_type) dispatch(data.event_type, e.data);
+    } catch(_) {}
+  });
+
+  es.onerror = function() {
+    // Minor-3 修正: onerror でも EventSource を閉じてリソースリークを防止
+    es.close();
+    // 完了後の切断は正常（バナー有無で判断）
+    var banner = document.getElementById('complete-banner');
+    if (!banner || !banner.innerHTML) {
+      // 未完了のエラー: キューをクリアして発話を停止
+      _ttsQueue = [];
+      _ttsSpeaking = false;
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      setStatus('接続が切断されました。');
+    }
+  };
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}PRISM — {{ title }}{% endblock %}
+{% block content %}
+
+<!-- ヘッダー情報 -->
+<div class="deliberation-header">
+  <a href="/" class="back-link">← ダッシュボードへ戻る</a>
+  <h2>{{ title }}</h2>
+  <p class="deliberation-question">「{{ question }}」</p>
+  <div class="deliberation-meta">
+    {% set mode_labels = {"speed": "早足", "standard": "常足", "deep": "熟考"} %}
+    <span class="mode-badge">{{ mode_labels.get(mode, mode) }}</span>
+    {% if status == "completed" %}
+    <span class="pill pill-completed">完了</span>
+    {% else %}
+    <span class="pill pill-failed">失敗</span>
+    {% endif %}
+    {% if created_at %}<span class="session-date">{{ created_at }}</span>{% endif %}
+    {% if duration_seconds %}<span class="session-date">{{ duration_seconds }}秒</span>{% endif %}
+  </div>
+</div>
+
+{% if status == "failed" %}
+<div class="status-bar error-bar">この熟議セッションは失敗しました。新規に熟議を開始してください。</div>
+{% elif third_solution %}
+
+<!-- 第三の解 -->
+<div class="synthesis-panel">
+  <div class="panel-label">第三の解</div>
+  <div class="synthesis-conclusion">{{ third_solution.conclusion or '' }}</div>
+
+  {% if third_solution.rationale %}
+  <div class="synthesis-section-title">論拠</div>
+  <div class="rationale-list">
+    {% for r in third_solution.rationale %}
+    <div class="rationale-item">
+      <span class="rationale-agent">{{ r.agent or '' }}</span>
+      <span>{{ r.point or '' }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if third_solution.actions_short_term %}
+  <div class="synthesis-section-title">短期アクション（即実行）</div>
+  <ul class="action-list">
+    {% for a in third_solution.actions_short_term %}
+    <li>{{ a }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if third_solution.actions_mid_term %}
+  <div class="synthesis-section-title">中期ロードマップ</div>
+  <ul class="action-list">
+    {% for a in third_solution.actions_mid_term %}
+    <li>{{ a }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if third_solution.minority_view %}
+  <div class="minority-note">少数意見：{{ third_solution.minority_view }}</div>
+  {% endif %}
+
+  {% if third_solution.guilford_scores %}
+  {% set g = third_solution.guilford_scores %}
+  <div class="synthesis-section-title">創造性評価（Guilford）</div>
+  <div class="guilford-grid">
+    <div class="guilford-item">
+      <div class="guilford-score">{{ g.fluency or '-' }}/5</div>
+      <div class="guilford-label">流暢性</div>
+    </div>
+    <div class="guilford-item">
+      <div class="guilford-score">{{ g.flexibility or '-' }}/5</div>
+      <div class="guilford-label">柔軟性</div>
+    </div>
+    <div class="guilford-item">
+      <div class="guilford-score">{{ g.elaboration or '-' }}/5</div>
+      <div class="guilford-label">精緻性</div>
+    </div>
+    <div class="guilford-item">
+      <div class="guilford-score">{{ g.originality or '-' }}/5</div>
+      <div class="guilford-label">独自性</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if third_solution.assumptions %}
+  <div class="synthesis-section-title">主要前提</div>
+  <ul class="action-list">
+    {% for a in third_solution.assumptions %}
+    <li>{{ a }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <!-- F-015 免責文言（固定・改変禁止） -->
+  <div class="disclaimer-text">{{ third_solution.disclaimer or '本提案は PRISM が熟議を経て導出した最善の一手です。最終判断は社長が下されるものです。' }}</div>
+</div>
+
+<!-- Pre-mortem（失敗シナリオ） -->
+{% if third_solution.failure_scenarios %}
+<div class="premortem-panel">
+  <div class="panel-label">失敗シナリオ（Pre-mortem）</div>
+  <ul class="scenario-list">
+    {% for s in third_solution.failure_scenarios %}
+    <li>{{ s }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<!-- 完了バナー -->
+<div class="complete-banner">
+  ✅ 熟議完了
+  <span class="cost-note">コスト ${{ "%.4f"|format(total_cost_usd) }}</span>
+</div>
+
+{% else %}
+<div class="status-bar">第三の解が見つかりませんでした。</div>
+{% endif %}
+
+{% endblock %}

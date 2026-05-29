@@ -1,0 +1,206 @@
+"""
+ARIF API — 認証ルート（Magic Link / Supabase Auth）
+
+仕様書 S-004・Opus 設計確定：Supabase Auth + Magic Link（Email 送信）。
+PKCE フロー（S256）：code_verifier を HttpOnly Cookie に保管し、
+/auth/callback でサーバーサイドトークン交換を行う。JS によるフラグメント読取不要。
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import secrets
+
+from fastapi import APIRouter, Form, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+# カンマ区切りで複数アドレスを許可（例: "a@x.com,b@y.com"）
+_ALLOWED_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in os.environ.get("ARIF_ALLOWED_EMAIL", "").split(",")
+    if e.strip()
+}
+_PKCE_COOKIE   = "arif-cv"   # code_verifier 一時保管 Cookie 名
+_PKCE_MAX_AGE  = 600         # 10 分で失効（メール確認の猶予）
+
+
+def _make_pkce() -> tuple[str, str]:
+    """PKCE S256: code_verifier と code_challenge を生成して返す。"""
+    verifier  = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+@router.post("/magic-link")
+async def send_magic_link(email: str = Form(...)) -> HTMLResponse:
+    """
+    Supabase Auth REST API を呼んで Magic Link メールを送信する。
+    HTMX フォーム（application/x-www-form-urlencoded）を受け付ける。
+    成功・失敗ともに HTMX が swap できる HTML フラグメントを返す。
+    許可 Email 以外は拒否（仕様書 S-004）。
+
+    PKCE フロー：
+      - code_challenge を OTP リクエストに付与
+      - code_verifier を HttpOnly Cookie として保管
+      - /auth/callback でサーバーサイドトークン交換
+    """
+    if _ALLOWED_EMAILS and email.lower() not in _ALLOWED_EMAILS:
+        return HTMLResponse(
+            '<p style="color:#f87171">このメールアドレスは許可されておりません。</p>'
+        )
+
+    import httpx
+
+    supabase_url = os.environ["SUPABASE_URL"]
+    supabase_key = os.environ["SUPABASE_KEY"]
+    base_url     = os.environ.get("ARIF_BASE_URL", "http://localhost:8001")
+    redirect_to  = f"{base_url}/auth/callback"
+
+    verifier, challenge = _make_pkce()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{supabase_url}/auth/v1/otp",
+            headers={"apikey": supabase_key, "Content-Type": "application/json"},
+            # redirect_to は URL クエリパラメータで渡す（GoTrue は body の options を読まない）
+            params={"redirect_to": redirect_to},
+            json={
+                "email": email,
+                "code_challenge":        challenge,
+                "code_challenge_method": "s256",
+            },
+        )
+
+    if resp.status_code == 429:
+        return HTMLResponse(
+            '<p style="color:#fb923c">送信が集中しております。数分後に再試行ください。</p>'
+        )
+    if resp.status_code not in (200, 201):
+        return HTMLResponse(
+            f'<p style="color:#f87171">送信に失敗しました（{resp.status_code}）。しばらくお待ちの上、再試行ください。</p>'
+        )
+
+    # code_verifier を HttpOnly Cookie に保管（callback まで使用）
+    response = HTMLResponse(
+        '<p style="color:#4ade80">✓ 認証リンクを送信しました。メールをご確認ください。</p>'
+    )
+    response.set_cookie(
+        _PKCE_COOKIE,
+        verifier,
+        httponly=True,
+        samesite="lax",
+        max_age=_PKCE_MAX_AGE,
+        secure=True,
+    )
+    return response
+
+
+@router.get("/callback", response_model=None)
+async def auth_callback(
+    request: Request,
+    response: Response,
+    code: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse | RedirectResponse:
+    """
+    Magic Link クリック後のリダイレクト先。
+    PKCE フロー：code + code_verifier でサーバーサイドトークン交換。
+    HttpOnly Cookie をセットして / へリダイレクト（JS 不要）。
+    """
+    if error:
+        return HTMLResponse(
+            f'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
+            f'<title>ARIF — 認証エラー</title></head><body>'
+            f'<p style="font-family:sans-serif">認証エラー: {error}'
+            f'<br><a href="/login">ログインに戻る</a></p></body></html>',
+            status_code=400,
+        )
+
+    if not code:
+        # code なし → implicit flow フォールバック（PKCE が利用不可の場合）
+        return HTMLResponse(_callback_html())
+
+    # PKCE フロー：code_verifier を Cookie から取得
+    import logging
+    _log = logging.getLogger("arif.auth")
+
+    verifier = request.cookies.get(_PKCE_COOKIE, "")
+    _log.info("CALLBACK: code=%s... verifier_found=%s cookies=%s",
+              code[:8], bool(verifier), list(request.cookies.keys()))
+
+    import httpx
+
+    supabase_url = os.environ["SUPABASE_URL"]
+    supabase_key = os.environ["SUPABASE_KEY"]
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{supabase_url}/auth/v1/token?grant_type=pkce",
+            headers={"apikey": supabase_key, "Content-Type": "application/json"},
+            json={"auth_code": code, "code_verifier": verifier},
+        )
+        if resp.status_code != 200:
+            return HTMLResponse(
+                '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
+                '<title>ARIF — 認証エラー</title></head><body>'
+                '<p style="font-family:sans-serif">認証に失敗しました。'
+                '<a href="/login">再度お試しください</a></p></body></html>',
+                status_code=401,
+            )
+
+        data          = resp.json()
+        access_token  = data.get("access_token",  "")
+        refresh_token = data.get("refresh_token", "")
+        _log.info("CALLBACK: token_exchange ok, at_len=%d rt_len=%d at_prefix=%s",
+                  len(access_token), len(refresh_token), access_token[:20])
+
+    redirect = RedirectResponse(url="/", status_code=303)
+    redirect.delete_cookie(_PKCE_COOKIE)
+    redirect.set_cookie("sb-access-token",  access_token,  httponly=True, samesite="lax")
+    redirect.set_cookie("sb-refresh-token", refresh_token, httponly=True, samesite="lax")
+    return redirect
+
+
+@router.post("/logout")
+async def logout(response: Response) -> RedirectResponse:
+    """Cookie を削除してログアウト。"""
+    redirect = RedirectResponse(url="/login", status_code=303)
+    redirect.delete_cookie("sb-access-token")
+    redirect.delete_cookie("sb-refresh-token")
+    return redirect
+
+
+def _callback_html() -> str:
+    """
+    Implicit flow フォールバック（PKCE が利用不可の場合のみ）。
+    フラグメントから access_token を読み取り Cookie をセットする。
+    """
+    return """
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="UTF-8"><title>ARIF — 認証処理中</title></head>
+<body>
+<p style="font-family:sans-serif">認証処理中…</p>
+<script>
+const hash = window.location.hash.substring(1);
+const params = new URLSearchParams(hash);
+const accessToken = params.get('access_token');
+const refreshToken = params.get('refresh_token');
+if (accessToken) {
+  document.cookie = `sb-access-token=${accessToken}; path=/; SameSite=Lax`;
+  document.cookie = `sb-refresh-token=${refreshToken}; path=/; SameSite=Lax`;
+  window.location.href = '/';
+} else {
+  const p = document.createElement('p');
+  p.textContent = '認証に失敗しました。再度お試しください。';
+  document.body.replaceChildren(p);
+}
+</script>
+</body>
+</html>
+"""

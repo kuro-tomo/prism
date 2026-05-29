@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}PRISM — 経営参謀AI{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/htmx-ext-sse.min.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="header-brand">
+      <a href="/">PRISM</a>
+      <span class="badge-beta">beta</span>
+      <span class="header-subtitle">経営参謀AI</span>
+    </div>
+    {% if user is defined and user %}
+    <nav>
+      <span>{{ user.email }}</span>
+      <a href="/profile" class="nav-profile-btn">🏢 会社プロフィール</a>
+      <form action="/auth/logout" method="post" style="display:inline">
+        <button type="submit">ログアウト</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <small>PRISM beta — Parallel Reasoning Intelligence System for Management</small>
+  </footer>
+</body>
+</html>

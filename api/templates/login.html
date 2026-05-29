@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}PRISM — ログイン{% endblock %}
+{% block content %}
+<div class="login-page">
+  <div class="login-card">
+
+    <div class="login-brand">
+      <div class="login-brand-logo">PRISM</div>
+      <div class="login-brand-acro">
+        <div><span class="acro-letter">P</span><span class="acro-rest">arallel</span></div>
+        <div><span class="acro-letter">R</span><span class="acro-rest">easoning</span></div>
+        <div><span class="acro-letter">I</span><span class="acro-rest">ntelligence</span></div>
+        <div><span class="acro-letter">S</span><span class="acro-rest">ystem</span></div>
+        <div><span class="acro-letter">M</span><span class="acro-rest">anagement</span></div>
+      </div>
+    </div>
+
+    <h2>ログイン</h2>
+    <p>登録メールアドレスに認証リンクを送信いたします。</p>
+
+    <form
+      hx-post="/auth/magic-link"
+      hx-target="#login-message"
+      hx-swap="innerHTML"
+      hx-disabled-elt="button[type='submit']"
+    >
+      <label for="email">メールアドレス</label>
+      <input type="email" id="email" name="email" required
+             placeholder="president@example.com" autocomplete="email">
+      <button type="submit">認証リンクを送信</button>
+    </form>
+
+    <div id="login-message" aria-live="polite"></div>
+  </div>
+</div>
+
+<script>
+/* Magic Link コールバック処理
+   Supabase が Site URL（/）にリダイレクトした場合、サーバーが /login に転送する。
+   ブラウザはフラグメント(#access_token=...)を保持するため、ここで処理する。 */
+(function () {
+  const hash = window.location.hash.substring(1);
+  if (!hash) return;
+  const params = new URLSearchParams(hash);
+  const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token');
+  if (!accessToken) return;
+  // Cookie にセット（HttpOnly ではないが、サーバー側の Cookie と共存させる）
+  document.cookie = 'sb-access-token=' + accessToken + '; path=/; SameSite=Lax';
+  if (refreshToken) {
+    document.cookie = 'sb-refresh-token=' + refreshToken + '; path=/; SameSite=Lax';
+  }
+  window.location.replace('/');
+})();
+</script>
+{% endblock %}

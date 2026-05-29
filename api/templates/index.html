@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}PRISM — 経営参謀AI{% endblock %}
+{% block content %}
+
+<div class="dashboard-grid">
+
+  <!-- ── 熟議入力フォーム ── -->
+  <div class="glass-card">
+    <div class="card-title">経営課題を入力</div>
+
+    <form
+      hx-post="/deliberations"
+      hx-target="#submit-result"
+      hx-swap="innerHTML"
+      hx-indicator="#spinner"
+      hx-disabled-elt="button[type='submit']"
+    >
+      <div class="field">
+        <label for="title">セッション名</label>
+        <input type="text" id="title" name="title" required
+               placeholder="中期事業戦略2026" maxlength="200">
+      </div>
+
+      <div class="field">
+        <div class="label-row">
+          <label for="question">経営課題</label>
+          <!-- 音声入力ボタン（Web Speech API 未対応時は JS で非表示） -->
+          <button type="button" id="mic-btn" class="mic-btn" title="音声入力" style="display:none" aria-label="音声入力開始" aria-pressed="false">
+            <span class="mic-icon">🎤</span>
+            <span class="mic-label">音声入力</span>
+          </button>
+        </div>
+        <textarea id="question" name="question" required
+                  placeholder="当社の5年後の主力事業をどう描くべきか？"
+                  rows="4" maxlength="4000"></textarea>
+        <div id="stt-status" class="stt-status" style="display:none"></div>
+        <!-- プライバシー注記（Web Speech API 対応ブラウザのみ JS で表示） -->
+        <div id="stt-privacy" class="stt-privacy" style="display:none">
+          ※ 音声は Google のサーバーで認識されます。機密性の高い課題はテキスト入力をご利用ください。
+        </div>
+      </div>
+
+      <div class="field">
+        <label>熟議モード</label>
+        <div class="mode-select">
+          <div class="mode-option">
+            <input type="radio" id="mode-speed" name="mode" value="speed">
+            <label for="mode-speed">早足<br><small>約30秒</small></label>
+          </div>
+          <div class="mode-option">
+            <input type="radio" id="mode-standard" name="mode" value="standard" checked>
+            <label for="mode-standard">常足<br><small>約2分</small></label>
+          </div>
+          <div class="mode-option">
+            <input type="radio" id="mode-deep" name="mode" value="deep">
+            <label for="mode-deep">熟考<br><small>約5分</small></label>
+          </div>
+        </div>
+      </div>
+
+      <button type="submit" class="submit-btn">
+        熟議を開始
+        <span id="spinner" class="htmx-indicator">…</span>
+      </button>
+    </form>
+
+    <div id="submit-result"></div>
+  </div>
+
+  <!-- ── 過去の熟議一覧 ── -->
+  <div class="glass-card">
+    <div class="card-title">過去の熟議</div>
+    <div class="session-list-inner"
+         hx-get="/deliberations/list"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <p class="loading-dots">読み込み中…</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ─── 音声入力（STT）Web Speech API ─────────────────────────
+(function () {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return; // 非対応ブラウザは非表示のまま
+
+  var micBtn     = document.getElementById('mic-btn');
+  var sttStatus  = document.getElementById('stt-status');
+  var sttPrivacy = document.getElementById('stt-privacy');
+  var textarea   = document.getElementById('question');
+  if (!micBtn || !textarea) return;
+
+  micBtn.style.display = 'inline-flex';
+  // プライバシー注記を STT 対応ブラウザのみ表示
+  if (sttPrivacy) sttPrivacy.style.display = 'block';
+
+  var recognition = new SR();
+  recognition.lang            = 'ja-JP';
+  recognition.continuous      = false;
+  recognition.interimResults  = true;
+  recognition.maxAlternatives = 1;
+
+  var recording = false;
+  var savedText = ''; // 認識前のテキストを保持
+
+  recognition.onstart = function () {
+    recording = true;
+    savedText = textarea.value;
+    micBtn.classList.add('recording');
+    micBtn.querySelector('.mic-label').textContent = '録音中…';
+    micBtn.setAttribute('aria-pressed', 'true');
+    sttStatus.textContent = '🎤 お話しください…';
+    sttStatus.style.display = 'block';
+    // 録音中は誤送信を防ぐため submit を無効化
+    var submitBtn = document.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+  };
+
+  recognition.onend = function () {
+    recording = false;
+    micBtn.classList.remove('recording');
+    micBtn.querySelector('.mic-label').textContent = '音声入力';
+    micBtn.setAttribute('aria-pressed', 'false');
+    sttStatus.textContent = '';
+    sttStatus.style.display = 'none';
+    var submitBtn = document.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = false;
+  };
+
+  recognition.onerror = function (e) {
+    recording = false;
+    micBtn.classList.remove('recording');
+    micBtn.querySelector('.mic-label').textContent = '音声入力';
+    micBtn.setAttribute('aria-pressed', 'false');
+    var msg = { 'not-allowed': 'マイクへのアクセスを許可してください。',
+                'no-speech': '音声が検出されませんでした。' };
+    sttStatus.textContent = msg[e.error] || ('エラー: ' + e.error);
+    sttStatus.style.display = 'block';
+    setTimeout(function () { sttStatus.style.display = 'none'; }, 3000);
+    var submitBtn = document.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = false;
+  };
+
+  recognition.onresult = function (e) {
+    var interim = '';
+    var final   = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        final += e.results[i][0].transcript;
+      } else {
+        interim += e.results[i][0].transcript;
+      }
+    }
+    // 確定テキストは savedText に追記、暫定テキストは薄く表示
+    if (final)   { savedText += final; }
+    textarea.value = savedText + interim;
+  };
+
+  micBtn.addEventListener('click', function () {
+    if (recording) {
+      recognition.stop();
+    } else {
+      textarea.value = '';
+      savedText = '';
+      recognition.start();
+    }
+  });
+})();
+</script>
+{% endblock %}
