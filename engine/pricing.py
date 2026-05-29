@@ -14,7 +14,7 @@ from decimal import Decimal
 # (input_per_million, output_per_million)
 MODEL_PRICES: dict[str, tuple[Decimal, Decimal]] = {
     # engine/agents.py DEBATE_MODEL
-    "claude-opus-4-20250514":      (Decimal("15.00"), Decimal("75.00")),
+    "claude-opus-4-8":             (Decimal("15.00"), Decimal("75.00")),
     # engine/agents.py SUMMARY_MODEL
     "claude-haiku-4-5-20251001":   (Decimal("0.80"),  Decimal("4.00")),
 }
