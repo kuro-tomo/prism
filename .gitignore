@@ -25,3 +25,8 @@ node_modules/
 # Secrets
 .env*
 !.env.example
+
+# CONFIDENTIAL documents（部外秘・gitに含めない）
+docs/PRISM_CFIM学術論文化_相談資料.*
+docs/PRISM_ホワイトラベル価格提案書.*
+docs/PRISM_開発見積書.*
