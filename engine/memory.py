@@ -65,11 +65,14 @@ async def get_db_pool(dsn: Optional[str] = None) -> asyncpg.Pool:
     url = dsn or os.environ["SUPABASE_DB_URL"]
     # search_path=arif を設定し、テーブル名プレフィックス（arif.xxx）不要にする
     # pr-scribe DB 内の arif PostgreSQL スキーマを使用（設計書 §6 参照）
+    # ssl="require": Render等の本番環境では Supabase への SSL 接続が必須
+    #   ローカル開発でも Supabase Direct Connection は SSL を受け入れるため問題なし
     pool: asyncpg.Pool = await asyncpg.create_pool(
         url,
         min_size=1,
         max_size=5,
         server_settings={"search_path": "arif"},
+        ssl="require",
     )
     return pool
 

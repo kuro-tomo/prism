@@ -42,17 +42,25 @@ async def lifespan(app: FastAPI):
     終了時：DB プール解放
     """
     logger.info("ARIF API 起動中 —— DB プールを初期化しています")
-    pool = await get_db_pool()
-    app.state.pool = pool
-
-    recovered = await recover_orphan_sessions(pool)
-    if recovered > 0:
-        logger.warning("起動 recovery: %d 件のセッションを failed に更新", recovered)
+    try:
+        pool = await get_db_pool()
+        app.state.pool = pool
+        recovered = await recover_orphan_sessions(pool)
+        if recovered > 0:
+            logger.warning("起動 recovery: %d 件のセッションを failed に更新", recovered)
+        logger.info("ARIF API 起動完了（DB 接続済み）")
+    except Exception as exc:
+        # DB 接続失敗でもアプリは起動させる（/health が 200 を返し Render の起動チェックを通す）
+        # 各リクエスト処理時に app.state.pool が存在しない場合は適切にエラーを返す
+        logger.error("DB プール初期化失敗（起動は継続）: %s", exc)
+        app.state.pool = None
 
     logger.info("ARIF API 起動完了")
     yield
 
-    await pool.close()
+    pool = getattr(app.state, "pool", None)
+    if pool:
+        await pool.close()
     logger.info("ARIF API 終了 —— DB プールをクローズしました")
 
 
