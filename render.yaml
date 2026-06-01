@@ -43,6 +43,11 @@ services:
       - key: SUPABASE_DB_URL
         sync: false
 
+      # アプリベースURL（Magic Link認証・メール通知URLに使用）
+      # デプロイ後の Render URL を設定すること（例: https://prism.onrender.com）
+      - key: ARIF_BASE_URL
+        sync: false
+
       # メール通知（任意・未設定の場合は通知機能のみ無効）
       - key: ARIF_SMTP_HOST
         sync: false
