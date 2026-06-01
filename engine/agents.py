@@ -19,7 +19,7 @@ from typing import Final, Literal
 
 # ── モデルバージョン（仕様書 §7 ピン留め・S-005 準拠）────────────────────
 # 変更時は仕様書・設計書も同時更新すること
-DEBATE_MODEL: Final[str] = "claude-opus-4-8"           # Round 1/2/3 討論役
+DEBATE_MODEL: Final[str] = "claude-opus-4-6"           # Round 1/2/3 討論役
 SUMMARY_MODEL: Final[str] = "claude-haiku-4-5-20251001"  # Round 間要約・収束チェック
 
 # 討論役の共通設定

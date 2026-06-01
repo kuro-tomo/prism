@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-# Anthropic 公式価格（2026-05 時点・per 1M tokens・USD）
+# Anthropic 公式価格（2026-06 時点・per 1M tokens・USD）
 # S-005：モデルバージョンを日付付きでピン留め。価格改定時はここのみ更新。
+# 参照: https://docs.anthropic.com/en/docs/about-claude/models/overview
 # (input_per_million, output_per_million)
 MODEL_PRICES: dict[str, tuple[Decimal, Decimal]] = {
-    # engine/agents.py DEBATE_MODEL
-    "claude-opus-4-8":             (Decimal("15.00"), Decimal("75.00")),
-    # engine/agents.py SUMMARY_MODEL
+    # engine/agents.py DEBATE_MODEL（Opus 4.6）
+    "claude-opus-4-6":             (Decimal("5.00"),  Decimal("25.00")),
+    # engine/agents.py SUMMARY_MODEL（Haiku 4.5）
     "claude-haiku-4-5-20251001":   (Decimal("0.80"),  Decimal("4.00")),
 }
 
