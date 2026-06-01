@@ -1,0 +1,56 @@
+# =============================================================
+# PRISM — render.yaml
+# Render Blueprint（Infrastructure as Code）
+# Deploy target: Render Web Service（Free Plan）
+# =============================================================
+
+services:
+  - type: web
+    name: prism
+    runtime: docker
+    plan: free
+    region: oregon          # Render は東京リージョン未提供・米西海岸（oregon）が最寄り
+                            # トレードオフ：Supabase DB は ap-northeast-1（東京）のため太平洋横断レイテンシが発生する
+                            # 熟議1回あたり数十回の DB 往復があり、体感遅延が蓄積する可能性あり
+                            # ただし社長1名・初期フェーズでは許容範囲と判断（Render 運用の単純性を優先）
+                            # 将来 Fly.io（東京リージョン nrt あり）への移行で解消可能
+
+    # ヘルスチェック（Renderが起動確認に使用）
+    healthCheckPath: /health
+
+    # 環境変数（値は Render ダッシュボードで手動設定すること・S-001 準拠）
+    # sync: false = GitHubに値を置かず、ダッシュボードで管理
+    envVars:
+      # Anthropic API（討論エンジン）
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      # Voyage AI（ベクトル埋め込み・voyage-3）
+      - key: VOYAGE_API_KEY
+        sync: false
+
+      # Supabase — REST/Auth
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+
+      # Supabase — JWT 検証
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # Supabase — asyncpg 直接接続
+      - key: SUPABASE_DB_URL
+        sync: false
+
+      # メール通知（任意・未設定の場合は通知機能のみ無効）
+      - key: ARIF_SMTP_HOST
+        sync: false
+      - key: ARIF_SMTP_PORT
+        sync: false
+      - key: ARIF_SMTP_USER
+        sync: false
+      - key: ARIF_SMTP_PASS
+        sync: false
+      - key: ARIF_SMTP_FROM
+        sync: false

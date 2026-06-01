@@ -1,0 +1,38 @@
+# 機密情報
+.env
+.env.*
+!.env.example
+
+# 仮想環境
+.venv/
+venv/
+
+# Python キャッシュ
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# 開発・テスト用
+tests/
+notebooks/
+
+# Supabase migration（実行時不要・スキーマ構造の露出防止）
+# migration は Supabase MCP または CLI から直接適用する
+supabase/
+
+# Git
+.git/
+.gitignore
+
+# ドキュメント（デプロイ不要）
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
