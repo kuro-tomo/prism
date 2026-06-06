@@ -39,6 +39,23 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser()
 
+  // ── Critical-1 修正: FastAPI deps.py は sb-access-token を読む ──────
+  // @supabase/ssr は独自のチャンク形式 Cookie を管理するが、
+  // FastAPI の get_current_user() は `sb-access-token` を期待する（deps.py L98）。
+  // セッションから access_token を取り出して手動で Cookie を同期する。
+  if (user) {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      supabaseResponse.cookies.set("sb-access-token", session.access_token, {
+        path: "/",
+        sameSite: "lax",
+        httpOnly: false, // FastAPI + ブラウザ両方から参照できるよう非HttpOnly
+        secure: process.env.NODE_ENV === "production",
+        maxAge: session.expires_in ?? 3600,
+      })
+    }
+  }
+
   const { pathname } = request.nextUrl
 
   // 未認証 → /login へリダイレクト（公開パスは除外）

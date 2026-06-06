@@ -22,11 +22,16 @@ export default function LoginClient() {
     const supabase = createClient()
 
     // URL フラグメントの access_token を検出して Supabase セッションを設定
-    supabase.auth.onAuthStateChange((event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_IN" && session) {
         router.replace("/dashboard")
       }
     })
+
+    // Major-1 修正: アンマウント時にサブスクリプションを解除してリークを防止
+    return () => subscription.unsubscribe()
   }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
