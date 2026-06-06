@@ -49,7 +49,8 @@ export async function proxy(request: NextRequest) {
       supabaseResponse.cookies.set("sb-access-token", session.access_token, {
         path: "/",
         sameSite: "lax",
-        httpOnly: false, // FastAPI + ブラウザ両方から参照できるよう非HttpOnly
+        httpOnly: true, // HttpOnly必須（XSSによるトークン盗取防止）
+        // FastAPIはサーバー間通信でCookieを自動受信するためhttpOnly: trueで問題なし
         secure: process.env.NODE_ENV === "production",
         maxAge: session.expires_in ?? 3600,
       })
