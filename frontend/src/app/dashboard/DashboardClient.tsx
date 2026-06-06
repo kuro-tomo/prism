@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
   createDeliberation,
+  getProfile,
   listDeliberations,
   type SessionListItem,
 } from "@/lib/api/client"
@@ -47,6 +48,20 @@ export default function DashboardClient() {
     }
   }, [])
   const { status: sttStatus, supported: sttSupported, start: sttStart, stop: sttStop } = useSTT(handleTranscript)
+
+  // ── 初回プロフィールチェック（company_name未設定 → /profile?first=1 へ誘導） ──
+  useEffect(() => {
+    getProfile()
+      .then((profile) => {
+        if (!profile.company_name) {
+          router.replace("/profile?first=1")
+        }
+      })
+      .catch(() => {
+        // プロフィール未登録（404）の場合もプロフィール設定画面へ
+        router.replace("/profile?first=1")
+      })
+  }, [router])
 
   // ── 過去セッション一覧ロード ──
   useEffect(() => {
