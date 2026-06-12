@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import os
 import secrets
 
@@ -116,14 +117,20 @@ async def auth_callback(
         return HTMLResponse(
             f'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
             f'<title>ARIF — 認証エラー</title></head><body>'
-            f'<p style="font-family:sans-serif">認証エラー: {error}'
+            f'<p style="font-family:sans-serif">認証エラー: {html.escape(error)}'
             f'<br><a href="/login">ログインに戻る</a></p></body></html>',
             status_code=400,
         )
 
     if not code:
-        # code なし → implicit flow フォールバック（PKCE が利用不可の場合）
-        return HTMLResponse(_callback_html())
+        # PKCE フロー必須。code なしは正常ではないため拒否する
+        return HTMLResponse(
+            '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
+            '<title>ARIF — 認証エラー</title></head><body>'
+            '<p style="font-family:sans-serif">認証コードが見つかりません。'
+            '<a href="/login">再度ログインしてください</a></p></body></html>',
+            status_code=400,
+        )
 
     # PKCE フロー：code_verifier を Cookie から取得
     import logging
@@ -161,8 +168,8 @@ async def auth_callback(
 
     redirect = RedirectResponse(url="/", status_code=303)
     redirect.delete_cookie(_PKCE_COOKIE)
-    redirect.set_cookie("sb-access-token",  access_token,  httponly=True, samesite="lax")
-    redirect.set_cookie("sb-refresh-token", refresh_token, httponly=True, samesite="lax")
+    redirect.set_cookie("sb-access-token",  access_token,  httponly=True, samesite="lax", secure=True)
+    redirect.set_cookie("sb-refresh-token", refresh_token, httponly=True, samesite="lax", secure=True)
     return redirect
 
 
@@ -175,32 +182,3 @@ async def logout(response: Response) -> RedirectResponse:
     return redirect
 
 
-def _callback_html() -> str:
-    """
-    Implicit flow フォールバック（PKCE が利用不可の場合のみ）。
-    フラグメントから access_token を読み取り Cookie をセットする。
-    """
-    return """
-<!DOCTYPE html>
-<html lang="ja">
-<head><meta charset="UTF-8"><title>ARIF — 認証処理中</title></head>
-<body>
-<p style="font-family:sans-serif">認証処理中…</p>
-<script>
-const hash = window.location.hash.substring(1);
-const params = new URLSearchParams(hash);
-const accessToken = params.get('access_token');
-const refreshToken = params.get('refresh_token');
-if (accessToken) {
-  document.cookie = `sb-access-token=${accessToken}; path=/; SameSite=Lax`;
-  document.cookie = `sb-refresh-token=${refreshToken}; path=/; SameSite=Lax`;
-  window.location.href = '/';
-} else {
-  const p = document.createElement('p');
-  p.textContent = '認証に失敗しました。再度お試しください。';
-  document.body.replaceChildren(p);
-}
-</script>
-</body>
-</html>
-"""

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation"
 import { Header } from "@/components/Header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { AgentCard, AGENT_META } from "@/components/AgentCard"
 import { SynthesisPanel } from "@/components/SynthesisPanel"
 import { useDeliberationStream } from "@/hooks/useDeliberationStream"
@@ -36,7 +36,8 @@ export default function DeliberationLiveClient({ sessionId, title, question, mod
     agents,
     roundSummaries,
     synthesis,
-    costUsd,
+    synthesisDraft,
+    costUsd: _costUsd,
     completed,
     error,
   } = streamState
@@ -94,78 +95,111 @@ export default function DeliberationLiveClient({ sessionId, title, question, mod
           </div>
         </div>
 
-        {/* ── Round 1 ── */}
-        <section>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            Round 1 — 独立意見
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {AGENT_IDS.map((id) => (
-              <AgentCard
-                key={`${id}-r1`}
-                agentId={id}
-                round={1}
-                content={agents[id]?.[1]?.content ?? ""}
-                populated={agents[id]?.[1]?.populated ?? false}
-              />
-            ))}
-          </div>
-          {roundSummaries[1] && (
-            <div className="mt-3 glass-card px-4 py-2 text-xs text-muted-foreground">
-              {roundSummaries[1]}
-            </div>
-          )}
-        </section>
-
-        {/* ── Round 2（Round 2 開始後に表示） ── */}
-        {currentRound >= 2 && (
-          <section>
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Round 2 — 反論・深掘り
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {AGENT_IDS.map((id) => (
-                <AgentCard
-                  key={`${id}-r2`}
-                  agentId={id}
-                  round={2}
-                  content={agents[id]?.[2]?.content ?? ""}
-                  populated={agents[id]?.[2]?.populated ?? false}
-                />
-              ))}
-            </div>
-            {roundSummaries[2] && (
-              <div className="mt-3 glass-card px-4 py-2 text-xs text-muted-foreground">
-                {roundSummaries[2]}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* ── 第三の解 + 完了バナー（完了後に表示） ── */}
-        {synthesis && (
-          <SynthesisPanel synthesis={synthesis} costUsd={costUsd ?? undefined} />
-        )}
-
-        {/* ── 進行中スピナー ── */}
-        {!completed && !error && !synthesis && (
+        {/* ── 第三の解（常時先頭表示） ── */}
+        {error && !synthesis ? (
           <Card>
-            <CardContent className="py-6 flex items-center justify-center gap-3 text-muted-foreground">
-              <div className="flex gap-1">
-                {["●", "●", "●"].map((dot, i) => (
-                  <span
-                    key={i}
-                    className="text-primary/60 animate-pulse"
-                    style={{ animationDelay: `${i * 0.2}s` }}
-                  >
-                    {dot}
-                  </span>
-                ))}
-              </div>
-              <span className="text-sm">熟議進行中…</span>
+            <CardContent className="py-4">
+              <p className="text-sm text-destructive">{error}</p>
             </CardContent>
           </Card>
+        ) : synthesis ? (
+          <SynthesisPanel synthesis={synthesis} />
+        ) : synthesisDraft ? (
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="text-xs font-semibold text-primary uppercase tracking-wider">
+                第三の解（統合中）
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                {synthesisDraft}
+              </p>
+              <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
+                <span className="animate-pulse text-primary">●</span>
+                統合中…
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          !completed && !error && (
+            <Card>
+              <CardContent className="py-6 flex items-center justify-center gap-3 text-muted-foreground">
+                <div className="flex gap-1">
+                  {["●", "●", "●"].map((dot, i) => (
+                    <span
+                      key={i}
+                      className="text-primary/60 animate-pulse"
+                      style={{ animationDelay: `${i * 0.2}s` }}
+                    >
+                      {dot}
+                    </span>
+                  ))}
+                </div>
+                <span className="text-sm">熟議進行中…</span>
+              </CardContent>
+            </Card>
+          )
         )}
+
+        {/* ── 熟議過程（折り畳み） ── */}
+        <details className="group">
+          <summary className="cursor-pointer select-none list-none flex items-center gap-2 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors">
+            <span className="transition-transform duration-200 group-open:rotate-90 inline-block">▶</span>
+            熟議過程
+          </summary>
+
+          <div className="mt-4 space-y-6">
+            {/* ── Round 1 ── */}
+            <section>
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                Round 1 — 独立意見
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {AGENT_IDS.map((id) => (
+                  <AgentCard
+                    key={`${id}-r1`}
+                    agentId={id}
+                    round={1}
+                    content={agents[id]?.[1]?.content ?? ""}
+                    populated={agents[id]?.[1]?.populated ?? false}
+                  />
+                ))}
+              </div>
+              {roundSummaries[1] && (
+                <div className="mt-3 glass-card px-4 py-2 text-xs text-muted-foreground">
+                  {roundSummaries[1]}
+                </div>
+              )}
+            </section>
+
+            {/* ── Round 2（Round 2 開始後に表示） ── */}
+            {currentRound >= 2 && (
+              <section>
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                  Round 2 — 反論・深掘り
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {AGENT_IDS.map((id) => (
+                    <AgentCard
+                      key={`${id}-r2`}
+                      agentId={id}
+                      round={2}
+                      content={agents[id]?.[2]?.content ?? ""}
+                      populated={agents[id]?.[2]?.populated ?? false}
+                    />
+                  ))}
+                </div>
+                {roundSummaries[2] && (
+                  <div className="mt-3 glass-card px-4 py-2 text-xs text-muted-foreground">
+                    {roundSummaries[2]}
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+        </details>
+
       </main>
     </div>
   )

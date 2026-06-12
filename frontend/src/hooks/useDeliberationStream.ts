@@ -33,6 +33,7 @@ export interface StreamState {
   agents: AgentsGrid
   roundSummaries: Record<Round, string | null>
   synthesis: ThirdSolution | null
+  synthesisDraft: string
   costUsd: number | null
   completed: boolean
   error: string | null
@@ -64,6 +65,7 @@ export function useDeliberationStream(
     agents: initialAgents(),
     roundSummaries: { 1: null, 2: null },
     synthesis: null,
+    synthesisDraft: "",
     costUsd: null,
     completed: false,
     error: null,
@@ -87,6 +89,7 @@ export function useDeliberationStream(
       "complete",
       "agent_error",
       "agent_content_delta",
+      "synthesis_delta",
     ] as const
 
     function dispatch(type: string, rawData: string) {
@@ -154,13 +157,44 @@ export function useDeliberationStream(
           break
         }
 
+        case "agent_content_delta": {
+          const agentId = data.agent_id as string
+          const round = (data.round ?? 1) as Round
+          const chunk = (data.text_chunk ?? "") as string
+          setState((s) => ({
+            ...s,
+            agents: {
+              ...s.agents,
+              [agentId]: {
+                ...s.agents[agentId],
+                [round]: {
+                  content: (s.agents[agentId]?.[round]?.content ?? "") + chunk,
+                  populated: false,
+                },
+              },
+            },
+          }))
+          break
+        }
+
+        case "synthesis_delta": {
+          const chunk = (data.text_chunk ?? "") as string
+          setState((s) => ({
+            ...s,
+            synthesisDraft: s.synthesisDraft + chunk,
+            status: "第三の解を統合中…",
+          }))
+          break
+        }
+
         case "synthesis_done": {
           const synthesis = data.synthesis as ThirdSolution | null
           if (synthesis) {
             setState((s) => ({
               ...s,
               synthesis,
-              status: "第三の解を統合中…",
+              synthesisDraft: "",
+              status: "第三の解が完成いたしました。",
             }))
             if (synthesis.conclusion) {
               onSpeak?.("第三の解。" + synthesis.conclusion, 0.98)
@@ -193,12 +227,15 @@ export function useDeliberationStream(
           break
         }
 
-        case "agent_error":
+        case "agent_error": {
+          const agentId = data.agent_id as string | undefined
+          const errMsg = (data.error ?? "不明") as string
           setState((s) => ({
             ...s,
-            status: `⚠ エラー：${(data.message ?? "不明") as string}`,
+            status: `⚠ エラー：${agentId ? agentId + " — " : ""}${errMsg}`,
           }))
           break
+        }
       }
     }
 

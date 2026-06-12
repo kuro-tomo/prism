@@ -13,6 +13,9 @@ import uuid
 from typing import Any
 from uuid import UUID
 
+# バックグラウンドタスクの参照を保持（GC による消失防止）
+_background_tasks: set[asyncio.Task] = set()
+
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -76,12 +79,14 @@ async def create_deliberation(
 
     if req.background:
         # バックグラウンド実行モード（F-013）。user.email を渡して N-002 通知を有効化
-        asyncio.create_task(
+        task = asyncio.create_task(
             run_in_background(
                 pool, session_id, user.id, req.title, req.question, mode,
                 user_email=user.email,
             )
         )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     # 通常モードの場合は /stream エンドポイントで SSE 接続して実行
 
     result = DeliberationResponse(
@@ -112,25 +117,38 @@ async def create_deliberation(
 async def stream_deliberation(
     session_id: UUID,
     request: Request,
-    question: str,
-    title: str,
-    mode: str = "standard",
     pool: asyncpg.Pool = Depends(get_pool),
     user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     """
     SSE でリアルタイム熟議進行状況を配信する（仕様書 A-004・F-008・F-011）。
 
-    クライアントは HTMX の htmx-ext-sse 拡張で受信する。
+    question / title / mode は DB から取得（クライアント供給値を信頼しない）。
+    所有権確認と status チェックにより IDOR・完了済み再実行を防ぐ。
     """
+    # DB から取得してクライアント供給値を一切使わない（IDOR・整合性対策）
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT question, title, mode, status FROM deliberation_sessions"
+            " WHERE id=$1 AND user_id=$2",
+            session_id,
+            user.id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="セッションが見つかりません。")
+    if row["status"] in ("completed", "failed"):
+        raise HTTPException(status_code=409, detail="このセッションは既に完了しています。")
+
+    question: str = row["question"]
+    title: str = row["title"]
+    mode: str = row["mode"]
+
+    if mode not in ("speed", "standard", "deep"):
+        raise HTTPException(status_code=422, detail=f"不正なモード: {mode!r}")
+
+    mode_val: Mode = mode  # type: ignore[assignment]
 
     async def event_generator():
-        # Mode は Literal 型ゆえ不可 instance 化。in 演算子でバリデーション（指摘E対応）。
-        if mode not in ("speed", "standard", "deep"):
-            yield ServerSentEvent(event="error", data=json.dumps({"message": f"不正なモード: {mode}"}))
-            return
-        mode_val: Mode = mode  # type: ignore[assignment]
-
         async for evt_name, evt_data in stream_and_persist(
             pool, session_id, user.id, title, question, mode_val
         ):

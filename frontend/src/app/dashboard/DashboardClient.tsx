@@ -17,10 +17,10 @@ import { Mic, MicOff, Loader2 } from "lucide-react"
 
 type Mode = "speed" | "standard" | "deep"
 
-const MODE_CONFIG: Record<Mode, { label: string; sub: string }> = {
-  speed:    { label: "早足",  sub: "約30秒" },
-  standard: { label: "常足",  sub: "約2分"  },
-  deep:     { label: "熟考",  sub: "約5分"  },
+const MODE_CONFIG: Record<Mode, { label: string; sub: string; recommended?: boolean }> = {
+  speed:    { label: "早足", sub: "方向性の確認（30秒）" },
+  standard: { label: "常足", sub: "実行可能な提案（2分）", recommended: true },
+  deep:     { label: "熟考", sub: "全方位から徹底議論（5分）" },
 }
 
 const STATUS_BADGE: Record<string, { variant: "success" | "destructive" | "secondary"; label: string }> = {
@@ -32,7 +32,6 @@ const STATUS_BADGE: Record<string, { variant: "success" | "destructive" | "secon
 
 export default function DashboardClient() {
   const router = useRouter()
-  const [title, setTitle]           = useState("")
   const [question, setQuestion]     = useState("")
   const [mode, setMode]             = useState<Mode>("standard")
   const [submitting, setSubmitting] = useState(false)
@@ -74,11 +73,14 @@ export default function DashboardClient() {
   // ── フォーム送信 ──
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!title.trim() || !question.trim()) return
+    if (!question.trim()) return
+    const trimmed = question.trim()
+    const chars = Array.from(trimmed)
+    const autoTitle = chars.length > 30 ? chars.slice(0, 30).join("") + "…" : trimmed
     setSubmitting(true)
     setSubmitError("")
     try {
-      const res = await createDeliberation({ title, question, mode })
+      const res = await createDeliberation({ title: autoTitle, question: trimmed, mode })
       router.push(`/deliberations/${res.session_id}`)
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "送信に失敗しました")
@@ -102,23 +104,6 @@ export default function DashboardClient() {
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
-
-                {/* セッション名 */}
-                <div className="space-y-1.5">
-                  <label htmlFor="title" className="text-xs text-muted-foreground">
-                    セッション名
-                  </label>
-                  <input
-                    id="title"
-                    type="text"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    required
-                    maxLength={200}
-                    placeholder="中期事業戦略2026"
-                    className="w-full bg-input border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
-                  />
-                </div>
 
                 {/* 経営課題（音声入力付き） */}
                 <div className="space-y-1.5">
@@ -160,7 +145,7 @@ export default function DashboardClient() {
                   )}
                   {sttSupported && (
                     <p className="text-xs text-muted-foreground/60">
-                      ※ 音声は Google のサーバーで認識されます。機密性の高い課題はテキスト入力をご利用ください。
+                      ※ 音声はクラウド処理されます。
                     </p>
                   )}
                 </div>
@@ -181,7 +166,10 @@ export default function DashboardClient() {
                             : "border-border text-muted-foreground hover:border-muted-foreground hover:text-foreground",
                         ].join(" ")}
                       >
-                        <div className="font-semibold">{cfg.label}</div>
+                        <div className="font-semibold flex items-center justify-center gap-1">
+                          {cfg.label}
+                          {cfg.recommended && <span className="text-[9px] text-primary/70">推奨</span>}
+                        </div>
                         <div className="text-[10px] mt-0.5 opacity-70">{cfg.sub}</div>
                       </button>
                     ))}
@@ -196,7 +184,7 @@ export default function DashboardClient() {
                   type="submit"
                   className="w-full"
                   size="lg"
-                  disabled={submitting || !title.trim() || !question.trim()}
+                  disabled={submitting || !question.trim()}
                 >
                   {submitting ? (
                     <><Loader2 className="h-4 w-4 animate-spin" />送信中…</>
@@ -249,10 +237,6 @@ export default function DashboardClient() {
                             <span className="text-xs text-muted-foreground">{modeLabel}</span>
                             <span className="text-muted-foreground/40 text-xs">·</span>
                             <span className="text-xs text-muted-foreground">{date}</span>
-                            <span className="text-muted-foreground/40 text-xs">·</span>
-                            <span className="text-xs text-muted-foreground">
-                              ${s.total_cost_usd.toFixed(4)}
-                            </span>
                           </div>
                         </button>
                       </li>

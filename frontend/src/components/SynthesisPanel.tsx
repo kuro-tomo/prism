@@ -1,26 +1,19 @@
 import type { ThirdSolution } from "@/lib/api/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { AGENT_META } from "@/components/AgentCard"
 
 interface SynthesisPanelProps {
   synthesis: ThirdSolution
-  costUsd?: number
 }
 
-export function SynthesisPanel({ synthesis, costUsd }: SynthesisPanelProps) {
-  const disclaimer =
-    synthesis.disclaimer ||
-    "本提案は PRISM が熟議を経て導出した最善の一手です。最終判断は社長が下されるものです。"
+export function SynthesisPanel({ synthesis }: SynthesisPanelProps) {
+  const disclaimer = synthesis.disclaimer || "PRISMの分析に基づく提案です。"
 
   return (
     <div className="space-y-4">
       {/* 完了バナー */}
-      <div className="glass-card p-4 border border-primary/30 bg-primary/5 flex items-center justify-between">
+      <div className="glass-card p-4 border border-primary/30 bg-primary/5">
         <span className="text-sm font-semibold text-primary">✅ 熟議完了</span>
-        {costUsd !== undefined && (
-          <span className="text-xs text-muted-foreground">
-            コスト ${costUsd.toFixed(4)}
-          </span>
-        )}
       </div>
 
       {/* 第三の解 */}
@@ -42,7 +35,7 @@ export function SynthesisPanel({ synthesis, costUsd }: SynthesisPanelProps) {
               <div className="space-y-2">
                 {synthesis.rationale.map((r, i) => (
                   <div key={i} className="flex gap-2 text-sm">
-                    <span className="text-primary shrink-0">{r.agent}</span>
+                    <span className="text-primary shrink-0">{AGENT_META[r.agent]?.label ?? r.agent}</span>
                     <span className="text-foreground/80">{r.point}</span>
                   </div>
                 ))}
@@ -92,31 +85,29 @@ export function SynthesisPanel({ synthesis, costUsd }: SynthesisPanelProps) {
             </section>
           )}
 
-          {/* Guilford スコア */}
-          {synthesis.guilford_scores && (
-            <section>
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                創造性評価（Guilford）
-              </h4>
-              <div className="grid grid-cols-4 gap-2">
-                {(
-                  [
-                    ["fluency",      "流暢性"],
-                    ["flexibility",  "柔軟性"],
-                    ["elaboration",  "精緻性"],
-                    ["originality",  "独自性"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <div key={key} className="text-center glass-card p-2">
-                    <div className="text-lg font-bold text-primary">
-                      {synthesis.guilford_scores![key] ?? "-"}/5
-                    </div>
-                    <div className="text-xs text-muted-foreground">{label}</div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+          {/* 回答品質（Guilford 平均→★表示） */}
+          {synthesis.guilford_scores && (() => {
+            const s = synthesis.guilford_scores!
+            const avg = (s.fluency + s.flexibility + s.elaboration + s.originality) / 4
+            const stars = Math.round(avg)
+            const tooltip = `流暢性:${s.fluency} / 柔軟性:${s.flexibility} / 精緻性:${s.elaboration} / 独自性:${s.originality}`
+            return (
+              <section>
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  回答品質
+                </h4>
+                <div
+                  className="flex items-center gap-2 cursor-help"
+                  title={tooltip}
+                >
+                  <span className="text-xl text-primary leading-none">
+                    {"★".repeat(stars)}{"☆".repeat(5 - stars)}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{avg.toFixed(1)} / 5</span>
+                </div>
+              </section>
+            )
+          })()}
 
           {/* 主要前提 */}
           {(synthesis.assumptions?.length ?? 0) > 0 && (
@@ -143,7 +134,7 @@ export function SynthesisPanel({ synthesis, costUsd }: SynthesisPanelProps) {
       {(synthesis.failure_scenarios?.length ?? 0) > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">失敗シナリオ（Pre-mortem）</CardTitle>
+            <CardTitle className="text-sm">失敗シナリオ予測</CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="space-y-1">

@@ -1063,23 +1063,19 @@ async def stream_debate(
 
     if is_streaming:
         # standard / deep：Synthesis もストリーミング（SynthesisDeltaEvent を yield）
-        # タイムアウト監視：最初のチャンク到着から _TIMEOUT_SECONDS 超過で TimeoutError を送出
+        # asyncio.timeout() で接続ハング含む全体をカバー（Python 3.12）
         synthesis_text = ""
-        _synthesis_start = time.monotonic()
-        async with _client.messages.stream(
-            model=synthesis_model,
-            max_tokens=MAX_TOKENS_DEBATE,
-            temperature=0.5,
-            messages=[{"role": "user", "content": synthesis_prompt}],
-        ) as stream:
-            async for text_chunk in stream.text_stream:
-                if time.monotonic() - _synthesis_start > _TIMEOUT_SECONDS:
-                    raise asyncio.TimeoutError(
-                        f"Synthesis ストリーミングタイムアウト ({_TIMEOUT_SECONDS:.0f}s 超過)"
-                    )
-                yield SynthesisDeltaEvent(text_chunk=text_chunk)
-                synthesis_text += text_chunk
-            synthesis_final = await stream.get_final_message()
+        async with asyncio.timeout(_TIMEOUT_SECONDS):
+            async with _client.messages.stream(
+                model=synthesis_model,
+                max_tokens=MAX_TOKENS_DEBATE,
+                temperature=0.5,
+                messages=[{"role": "user", "content": synthesis_prompt}],
+            ) as stream:
+                async for text_chunk in stream.text_stream:
+                    yield SynthesisDeltaEvent(text_chunk=text_chunk)
+                    synthesis_text += text_chunk
+                synthesis_final = await stream.get_final_message()
         token_tracker.append((
             synthesis_model,
             synthesis_final.usage.input_tokens,

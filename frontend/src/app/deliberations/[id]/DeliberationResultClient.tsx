@@ -76,7 +76,6 @@ export default function DeliberationResultClient({ detail }: Props) {
         {detail.third_solution ? (
           <SynthesisPanel
             synthesis={detail.third_solution}
-            costUsd={detail.total_cost_usd}
           />
         ) : (
           detail.status !== "failed" && (

@@ -337,42 +337,38 @@ class TestStreamDeliberation:
         )
         assert resp.status_code == 401
 
-    async def test_stream_invalid_mode_returns_200_with_error_event(
+    async def test_stream_session_not_found_returns_404(
         self, client: AsyncClient
     ) -> None:
-        """不正モードでも SSE は HTTP 200 を返し、error イベントをストリームする（設計書 §7.3）。"""
-        resp = await client.get(
-            f"/deliberations/{uuid.uuid4()}/stream",
-            params={"question": "テスト", "title": "タイトル", "mode": "ultra"},
-        )
-        assert resp.status_code == 200
-        assert "text/event-stream" in resp.headers.get("content-type", "")
-        assert "error" in resp.text
+        """所有者不一致またはセッション未存在は 404（IDOR 防止）。"""
+        resp = await client.get(f"/deliberations/{uuid.uuid4()}/stream")
+        assert resp.status_code == 404
 
-    async def test_stream_valid_mode_returns_200(
-        self, client: AsyncClient
+    async def test_stream_completed_session_returns_409(
+        self, client: AsyncClient, mock_pool: Any
     ) -> None:
-        """正常モード + mock generator で HTTP 200 が返る（仕様書 A-004）。"""
+        """完了済みセッションへの再接続は 409（再実行防止）。"""
+        mock_pool.acquire.return_value.__aenter__.return_value.fetchrow = AsyncMock(
+            return_value={"question": "テスト", "title": "タイトル", "mode": "speed", "status": "completed"}
+        )
+        resp = await client.get(f"/deliberations/{uuid.uuid4()}/stream")
+        assert resp.status_code == 409
+
+    async def test_stream_valid_session_returns_200(
+        self, client: AsyncClient, mock_pool: Any
+    ) -> None:
+        """pending セッション + mock generator で HTTP 200・event-stream が返る（仕様書 A-004）。"""
+        mock_pool.acquire.return_value.__aenter__.return_value.fetchrow = AsyncMock(
+            return_value={"question": "テスト", "title": "タイトル", "mode": "speed", "status": "pending"}
+        )
+
         async def _mock_stream(*args: Any, **kwargs: Any):
             yield ("session_start", {"mode": "speed", "event_type": "session_start"})
 
         with patch("api.routes.deliberations.stream_and_persist", new=_mock_stream):
-            resp = await client.get(
-                f"/deliberations/{uuid.uuid4()}/stream",
-                params={"question": "テスト", "title": "タイトル", "mode": "speed"},
-            )
+            resp = await client.get(f"/deliberations/{uuid.uuid4()}/stream")
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
-
-    async def test_stream_missing_question_returns_422(
-        self, client: AsyncClient
-    ) -> None:
-        """question クエリパラメータ必須（FastAPI バリデーション）。"""
-        resp = await client.get(
-            f"/deliberations/{uuid.uuid4()}/stream",
-            params={"title": "タイトル"},
-        )
-        assert resp.status_code == 422
 
 
 # ===========================
