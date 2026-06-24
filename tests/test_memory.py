@@ -35,6 +35,7 @@ from engine.memory import (
     STATUS_PENDING,
     STATUS_ROUND1,
     build_context_prompt,
+    create_research_session,
     create_session,
     embed_text,
     get_company_profile,
@@ -44,6 +45,7 @@ from engine.memory import (
     save_agent_response,
     save_debate_result,
     search_similar_context,
+    search_similar_sessions,
     update_session_status,
 )
 from engine.debate import DebateResult, ThirdSolution
@@ -622,3 +624,213 @@ class TestGetCompanyProfile:
         # プロフィールが先頭にある（インデックス 0 付近）
         assert result.index("会社プロフィール") < 50
         assert "建設機械部品メーカー" in result
+
+
+# ===========================
+# §9 search_similar_sessions（仕様書 F-021・設計書 §6.3 ステップ⑤）
+# ===========================
+
+@pytest.mark.asyncio
+class TestSearchSimilarSessions:
+    """search_similar_sessions() の不変条件を検証する（仕様書 F-021）"""
+
+    async def test_returns_list_of_dicts(self) -> None:
+        """検索結果は dict のリストで返る。"""
+        mock_rows = [
+            {"session_id": uuid4(), "question": "人員削減をすべきか", "conclusion": "段階的削減を推奨", "similarity": 0.85},
+        ]
+        pool, conn = make_pool(fetch_return=mock_rows)
+        result = await search_similar_sessions(pool, [0.1] * EMBEDDING_DIMENSIONS)
+        assert isinstance(result, list)
+        assert result[0]["conclusion"] == "段階的削減を推奨"
+        assert result[0]["similarity"] == 0.85
+
+    async def test_top_k_in_sql_args(self) -> None:
+        """top_k が SQL の LIMIT に渡される。"""
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS, top_k=5)
+        _, *args = conn.fetch.call_args[0]
+        assert 5 in args
+
+    async def test_user_id_in_sql_args(self) -> None:
+        """user_id 指定時に SQL 引数に含まれる（RLS補完）。"""
+        uid = str(uuid4())
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS, user_id=uid)
+        _, *args = conn.fetch.call_args[0]
+        assert uid in args
+
+    async def test_excludes_null_embedding(self) -> None:
+        """SQL に question_embedding IS NOT NULL が含まれる（仕様書 F-021）。"""
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS)
+        sql = conn.fetch.call_args[0][0]
+        assert "question_embedding IS NOT NULL" in sql
+
+    async def test_only_completed_sessions(self) -> None:
+        """SQL に status = 'completed' フィルタが含まれる。"""
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS)
+        sql = conn.fetch.call_args[0][0]
+        assert "status = 'completed'" in sql
+
+    async def test_exclude_ids_in_args(self) -> None:
+        """exclude_ids 指定時に SQL 引数に UUID リストが含まれる（重複排除）。"""
+        uid = uuid4()
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS, exclude_ids=[uid])
+        _, *args = conn.fetch.call_args[0]
+        # exclude_ids は [str(uid)] として渡される
+        assert any(isinstance(a, list) and str(uid) in a for a in args)
+
+    async def test_no_exclude_ids_omits_filter(self) -> None:
+        """exclude_ids 未指定時は除外フィルタが SQL に現れない。"""
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS)
+        sql = conn.fetch.call_args[0][0]
+        assert "ALL(" not in sql
+
+    async def test_save_debate_result_includes_embedding(self) -> None:
+        """save_debate_result が question_embedding カラムを UPDATE に含める（仕様書 F-021）。"""
+        pool, conn = make_pool()
+        dummy_result = DebateResult(
+            question="コスト削減をすべきか",
+            memory_context="",
+        )
+        with patch("engine.memory.embed_text", AsyncMock(return_value=[0.0] * 1024)):
+            await save_debate_result(pool, uuid4(), dummy_result)
+        sql = conn.execute.call_args[0][0]
+        assert "question_embedding" in sql
+
+    async def test_save_debate_result_embedding_failure_does_not_raise(self) -> None:
+        """embed_text 失敗時でも save_debate_result は例外を送出しない（フォールバック設計）。"""
+        pool, conn = make_pool()
+        dummy_result = DebateResult(
+            question="コスト削減をすべきか",
+            memory_context="",
+        )
+        with patch("engine.memory.embed_text", AsyncMock(side_effect=Exception("API failure"))):
+            await save_debate_result(pool, uuid4(), dummy_result)
+        # 例外なく UPDATE が実行され、question_embedding は NULL($5=None)で保存される
+        assert conn.execute.called
+
+
+# ===========================
+# §10 create_research_session（仕様書 F-022・設計書 §6.5）
+# ===========================
+
+@pytest.mark.asyncio
+class TestCreateResearchSession:
+    """create_research_session() の不変条件を検証する（仕様書 F-022）"""
+
+    async def test_inserts_is_research_true(self) -> None:
+        """SQL に is_research = true が含まれる（RAG 汚染防止フラグ）。"""
+        fixed_id = uuid4()
+        pool, conn = make_pool(fetchrow_return={"id": str(fixed_id)})
+        await create_research_session(pool, question="研究用課題", mode="standard")
+        sql = conn.fetchrow.call_args[0][0]
+        assert "is_research" in sql
+        assert "true" in sql.lower()
+
+    async def test_returns_uuid(self) -> None:
+        """UUID を返す。"""
+        fixed_id = uuid4()
+        pool, conn = make_pool(fetchrow_return={"id": str(fixed_id)})
+        result = await create_research_session(pool, question="研究用課題", mode="standard")
+        assert isinstance(result, UUID)
+        assert result == fixed_id
+
+    async def test_title_defaults_to_question_prefix(self) -> None:
+        """title 省略時は question 先頭 50 文字が INSERT される。"""
+        fixed_id = uuid4()
+        pool, conn = make_pool(fetchrow_return={"id": str(fixed_id)})
+        long_q = "a" * 60
+        await create_research_session(pool, question=long_q, mode="standard")
+        _, *args = conn.fetchrow.call_args[0]
+        assert args[0] == long_q[:50] + "…"
+
+    async def test_status_is_pending(self) -> None:
+        """INSERT 時の status は pending。"""
+        fixed_id = uuid4()
+        pool, conn = make_pool(fetchrow_return={"id": str(fixed_id)})
+        await create_research_session(pool, question="研究用課題", mode="standard")
+        _, *args = conn.fetchrow.call_args[0]
+        assert "pending" in args
+
+
+# ===========================
+# §11 RAG 汚染防止フィルタ（仕様書 F-022・設計書 §6.5）
+# ===========================
+
+@pytest.mark.asyncio
+class TestResearchSessionExclusionFromRAG:
+    """search_similar_sessions / get_recent_sessions が is_research = false フィルタを持つ。"""
+
+    async def test_search_similar_sessions_excludes_research(self) -> None:
+        """search_similar_sessions の SQL に is_research = false が含まれる。"""
+        pool, conn = make_pool(fetch_return=[])
+        await search_similar_sessions(pool, [0.0] * EMBEDDING_DIMENSIONS)
+        sql = conn.fetch.call_args[0][0]
+        assert "is_research = false" in sql
+
+    async def test_get_recent_sessions_excludes_research(self) -> None:
+        """get_recent_sessions の SQL に is_research = false が含まれる。"""
+        pool, conn = make_pool(fetch_return=[])
+        await get_recent_sessions(pool)
+        sql = conn.fetch.call_args[0][0]
+        assert "is_research = false" in sql
+
+
+# ===========================
+# §12 diversity_score 永続化（仕様書 F-022・設計書 §6.5）
+# ===========================
+
+@pytest.mark.asyncio
+class TestSaveDebateResultDiversityScores:
+    """save_debate_result が diversity_score_r1/r2 を UPDATE に含める。"""
+
+    async def test_diversity_scores_in_sql(self) -> None:
+        """UPDATE SQL に diversity_score_r1 / diversity_score_r2 カラムが含まれる。"""
+        pool, conn = make_pool()
+        dummy_result = DebateResult(
+            question="新工場建設を進めるか",
+            memory_context="",
+            diversity_score_r1=0.42,
+            diversity_score_r2=0.55,
+        )
+        with patch("engine.memory.embed_text", AsyncMock(return_value=[0.0] * 1024)):
+            await save_debate_result(pool, uuid4(), dummy_result)
+        sql = conn.execute.call_args[0][0]
+        assert "diversity_score_r1" in sql
+        assert "diversity_score_r2" in sql
+
+    async def test_zero_diversity_stored_as_float(self) -> None:
+        """diversity_score が 0.0（完全収束）の場合も有効値として 0.0 で保存される。"""
+        pool, conn = make_pool()
+        dummy_result = DebateResult(
+            question="新工場建設を進めるか",
+            memory_context="",
+            diversity_score_r1=0.0,
+            diversity_score_r2=0.0,
+        )
+        with patch("engine.memory.embed_text", AsyncMock(return_value=[0.0] * 1024)):
+            await save_debate_result(pool, uuid4(), dummy_result)
+        _, *args = conn.execute.call_args[0]
+        # $6 = diversity_score_r1, $7 = diversity_score_r2（0.0 は完全収束の有効値）
+        assert args[5] == pytest.approx(0.0, abs=1e-6)
+        assert args[6] == pytest.approx(0.0, abs=1e-6)
+
+    async def test_nonzero_diversity_stored_as_float(self) -> None:
+        """diversity_score が 0.0 超の場合は float 値で保存される。"""
+        pool, conn = make_pool()
+        dummy_result = DebateResult(
+            question="新工場建設を進めるか",
+            memory_context="",
+            diversity_score_r1=0.35,
+            diversity_score_r2=0.48,
+        )
+        with patch("engine.memory.embed_text", AsyncMock(return_value=[0.0] * 1024)):
+            await save_debate_result(pool, uuid4(), dummy_result)
+        _, *args = conn.execute.call_args[0]
+        assert args[5] == pytest.approx(0.35, abs=1e-6)
+        assert args[6] == pytest.approx(0.48, abs=1e-6)

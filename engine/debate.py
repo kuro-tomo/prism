@@ -65,6 +65,15 @@ ARIF_DISCLAIMER: str = (
 
 # 熟議制御定数
 MIN_AGENTS_FOR_SYNTHESIS: Final[int] = 3    # 統合に必要な最低生存エージェント数
+
+# 匿名査読：Round 1 要約のエージェントID→匿名ラベルマッピング（合意バイアス防止・仕様書 §4.2）
+_ANON_LABELS: Final[dict[str, str]] = {
+    "strategist": "意見A",
+    "cfo":        "意見B",
+    "engineer":   "意見C",
+    "market":     "意見D",
+    "risk":       "意見E",
+}
 _SEMAPHORE_LIMIT: Final[int] = 4            # 同時API呼び出し上限（設計書 §3 concurrency_limit）
 _TIMEOUT_SECONDS: Final[float] = 120.0     # 1体あたりタイムアウト（設計書 §8）
 _RETRY_DELAYS: Final[tuple[float, ...]] = (1.0, 2.0, 4.0)  # 指数バックオフ待機秒数
@@ -490,6 +499,15 @@ async def _stream_agents_parallel(
 
 # ── プロンプト構築関数 ──────────────────────────────────────────────
 
+def _anonymize_summary(text: str) -> str:
+    """Round 1 要約のエージェントID見出しを匿名ラベルに置換する。
+    Round 2 エージェントが発言者の役職を意識せず内容のみで評価するよう設計（合意バイアス防止）。
+    """
+    for agent_id, label in _ANON_LABELS.items():
+        text = text.replace(f"## {agent_id}", f"## {label}")
+    return text
+
+
 def _build_round1_prompt(question: str, memory_context: str) -> str:
     """Round 1 ユーザープロンプト — 完全独立・相互参照なし"""
     ctx_section = f"\n\n## 過去の文脈\n{memory_context}" if memory_context.strip() else ""
@@ -777,7 +795,7 @@ async def run_debate(
             "content": _build_summary_prompt(list(result.round1.items()), question),
         }],
     )
-    summary_r1: str = _extract_text(summary_r1_msg)
+    summary_r1: str = _anonymize_summary(_extract_text(summary_r1_msg))
 
     # ── Round 2：生存エージェントのみ並列呼び出し（反論義務プロンプト） ──
     surviving_agents = [aid for aid in roster if aid in result.round1]
@@ -997,7 +1015,7 @@ async def stream_debate(
             "content": _build_summary_prompt(list(round1.items()), question),
         }],
     )
-    summary_r1 = _extract_text(summary_r1_msg)
+    summary_r1 = _anonymize_summary(_extract_text(summary_r1_msg))
     token_tracker.append((
         summary_model, summary_r1_msg.usage.input_tokens, summary_r1_msg.usage.output_tokens,
     ))

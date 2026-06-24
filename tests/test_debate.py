@@ -25,6 +25,8 @@ import pytest
 from engine.debate import (
     ARIF_DISCLAIMER,
     MIN_AGENTS_FOR_SYNTHESIS,
+    _ANON_LABELS,
+    _anonymize_summary,
     AgentContentDeltaEvent,
     AgentDoneEvent,
     AgentErrorEvent,
@@ -832,3 +834,59 @@ class TestStreamDebatePhase35:
         # JSON シリアライズ可能であること（SSE 配信に必要）
         serialized = _json.dumps({"total_cost_usd": complete.total_cost_usd})
         assert "total_cost_usd" in serialized
+
+
+# ───────────────────────────────────────
+# 匿名査読テスト（仕様書 §4.2）
+# ───────────────────────────────────────
+
+class TestAnonymizeSummary:
+    """_anonymize_summary() および _ANON_LABELS の不変条件を検証する（仕様書 §4.2）"""
+
+    def test_anon_labels_covers_all_five_agents(self) -> None:
+        """_ANON_LABELS が全5エージェントIDを網羅していること"""
+        expected_agents = {"strategist", "cfo", "engineer", "market", "risk"}
+        assert set(_ANON_LABELS.keys()) == expected_agents
+
+    def test_anon_labels_unique_values(self) -> None:
+        """匿名ラベルが重複なく割り当てられていること"""
+        labels = list(_ANON_LABELS.values())
+        assert len(labels) == len(set(labels))
+
+    def test_anonymize_replaces_agent_id_headings(self) -> None:
+        """## strategist 等の見出しが匿名ラベルに置換されること"""
+        text = "## strategist\n戦略的観点から...\n## cfo\n財務的観点から..."
+        result = _anonymize_summary(text)
+        assert "## strategist" not in result
+        assert "## cfo" not in result
+        assert "## 意見A" in result
+        assert "## 意見B" in result
+
+    def test_anonymize_does_not_replace_inline_agent_id(self) -> None:
+        """見出し（## ）以外のエージェントID文言は置換されないこと"""
+        text = "strategistが主張した通り...\n## strategist\n詳細はこちら"
+        result = _anonymize_summary(text)
+        # インライン文言は残る
+        assert "strategistが主張した通り" in result
+        # 見出しは匿名化される
+        assert "## strategist" not in result
+        assert "## 意見A" in result
+
+    def test_anonymize_empty_string_returns_empty(self) -> None:
+        """空文字列を渡しても空文字列が返ること"""
+        assert _anonymize_summary("") == ""
+
+    def test_anonymize_no_agent_headings_unchanged(self) -> None:
+        """エージェント見出しが含まれないテキストは変更されないこと"""
+        text = "Round 1 の総合要約です。全エージェントが同意しています。"
+        assert _anonymize_summary(text) == text
+
+    def test_anonymize_all_five_agents(self) -> None:
+        """全5エージェント見出しが対応する意見ラベルに置換されること"""
+        lines = [f"## {aid}" for aid in _ANON_LABELS]
+        text = "\n".join(lines)
+        result = _anonymize_summary(text)
+        for agent_id in _ANON_LABELS:
+            assert f"## {agent_id}" not in result
+        for label in _ANON_LABELS.values():
+            assert f"## {label}" in result
