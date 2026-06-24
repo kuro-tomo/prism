@@ -488,3 +488,64 @@ class TestProfileFetchAPI:
         assert data["error"] == ""
         assert data["industry"] == "建設機械部品メーカー"
         assert data["main_products"] == "油圧シリンダー"
+
+
+# ===========================
+# _persist_round_summary — SSE パスの Φ 永続化（F-022・重大③修復の回帰固定）
+# ===========================
+
+class TestPersistRoundSummary:
+    """本番 SSE パスで diversity_score_phi が正しい列にマッピングされるか直接検証。
+
+    重大③修復（Φ_R1/Φ_R2 破棄バグ）の核心ロジック
+    （debate_service.py: col = "diversity_score_r1" if round==1 else "diversity_score_r2"）
+    を固定する。round 判定を将来反転させたらこのテストが落ちる。
+    """
+
+    def _make_pool(self):
+        conn = AsyncMock()
+        conn.execute = AsyncMock(return_value="UPDATE 1")
+        acquire_ctx = MagicMock()
+        acquire_ctx.__aenter__ = AsyncMock(return_value=conn)
+        acquire_ctx.__aexit__ = AsyncMock(return_value=False)
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=acquire_ctx)
+        return pool, conn
+
+    async def test_round1_maps_to_r1_column(self) -> None:
+        """round=1 → diversity_score_r1 列に Φ_R1 を保存。"""
+        from api.services.debate_service import _persist_round_summary
+        from engine.debate import RoundSummaryEvent
+
+        pool, conn = self._make_pool()
+        sid = uuid.uuid4()
+        await _persist_round_summary(pool, sid, RoundSummaryEvent(round=1, diversity_score_phi=0.42))
+        sql, *args = conn.execute.call_args[0]
+        assert "diversity_score_r1" in sql
+        assert "diversity_score_r2" not in sql
+        assert args[1] == pytest.approx(0.42, abs=1e-6)  # $2 = Φ 値
+
+    async def test_round2_maps_to_r2_column(self) -> None:
+        """round=2 → diversity_score_r2 列に Φ_R2 を保存。"""
+        from api.services.debate_service import _persist_round_summary
+        from engine.debate import RoundSummaryEvent
+
+        pool, conn = self._make_pool()
+        sid = uuid.uuid4()
+        await _persist_round_summary(pool, sid, RoundSummaryEvent(round=2, diversity_score_phi=0.61))
+        sql, *args = conn.execute.call_args[0]
+        assert "diversity_score_r2" in sql
+        assert "diversity_score_r1" not in sql
+        assert args[1] == pytest.approx(0.61, abs=1e-6)
+
+    async def test_status_transition_preserved(self) -> None:
+        """status 遷移（round1→round2, round2→synthesis）が回帰していない。"""
+        from api.services.debate_service import _persist_round_summary
+        from engine.debate import RoundSummaryEvent
+        from engine.memory import STATUS_ROUND2, STATUS_SYNTHESIS
+
+        pool, conn = self._make_pool()
+        await _persist_round_summary(pool, uuid.uuid4(), RoundSummaryEvent(round=1, diversity_score_phi=0.3))
+        assert conn.execute.call_args[0][1] == STATUS_ROUND2  # $1 = status
+        await _persist_round_summary(pool, uuid.uuid4(), RoundSummaryEvent(round=2, diversity_score_phi=0.3))
+        assert conn.execute.call_args[0][1] == STATUS_SYNTHESIS

@@ -117,6 +117,46 @@ async def create_session(
     return UUID(str(row["id"]))
 
 
+async def create_research_session(
+    pool: asyncpg.Pool,
+    *,
+    question: str,
+    mode: str,
+    title: str = "",
+) -> UUID:
+    """研究用熟議セッションを pending 状態で作成し、UUID を返す（仕様書 F-022）。
+
+    is_research = true を設定することで、本番 RAG（search_similar_sessions /
+    get_recent_sessions）の検索対象から除外される。
+    実験データが通常ユーザーの熟議文脈に混入するのを防ぐ（RAG 汚染防止）。
+
+    Args:
+        pool:     asyncpg コネクションプール
+        question: 標準化シナリオの経営課題テキスト
+        mode:     熟議モード（"speed" / "standard" / "deep"）
+        title:    タイトル。省略時は question の先頭 50 文字
+
+    Returns:
+        作成されたセッションの UUID
+    """
+    if not title:
+        title = question[:50] + ("…" if len(question) > 50 else "")
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO deliberation_sessions (title, question, mode, status, is_research)
+            VALUES ($1, $2, $3, $4, true)
+            RETURNING id
+            """,
+            title,
+            question,
+            mode,
+            STATUS_PENDING,
+        )
+    return UUID(str(row["id"]))
+
+
 async def update_session_status(
     pool: asyncpg.Pool,
     session_id: UUID,
@@ -150,23 +190,34 @@ async def save_debate_result(
     pool: asyncpg.Pool,
     session_id: UUID,
     result: DebateResult,
+    *,
+    voyage_api_key: str | None = None,
 ) -> None:
     """DebateResult を deliberation_sessions に保存して completed へ遷移する。
 
     ThirdSolution（result.synthesis）は JSONB として JSON シリアライズして保存する（設計書 §6.1）。
-    トークン集計値（total_input/output_tokens）は agent_responses テーブルで管理するため
-    セッションレベルでは 0 を保存する（Phase 4 で集計機能を追加予定）。
+    question_embedding は Voyage AI voyage-3 で生成し同時保存する（仕様書 F-021・設計書 §6.3）。
+    embedding 生成失敗はセッション保存を阻害しない（try/except で続行）。
 
     Args:
-        pool:       asyncpg コネクションプール
-        session_id: 対象セッション UUID
-        result:     run_debate() の戻り値
+        pool:           asyncpg コネクションプール
+        session_id:     対象セッション UUID
+        result:         run_debate() の戻り値
+        voyage_api_key: Voyage AI API キー（省略時は環境変数 VOYAGE_API_KEY）
     """
     third_solution_json: Optional[str] = None
     if result.synthesis is not None:
         third_solution_json = json.dumps(
             asdict(result.synthesis), ensure_ascii=False
         )
+
+    # question_embedding 生成（失敗してもセッション保存は継続）
+    question_embedding_str: Optional[str] = None
+    try:
+        embedding = await embed_text(result.question, api_key=voyage_api_key)
+        question_embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+    except Exception:
+        pass  # 次回熟議のRAG精度は低下するが、このセッション保存は成功させる
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -176,13 +227,19 @@ async def save_debate_result(
                 status              = $1,
                 third_solution      = $2::jsonb,
                 total_cost_usd      = $3,
-                duration_seconds    = $4
-            WHERE id = $5
+                duration_seconds    = $4,
+                question_embedding  = $5::vector,
+                diversity_score_r1  = $6,
+                diversity_score_r2  = $7
+            WHERE id = $8
             """,
             STATUS_COMPLETED,
             third_solution_json,
             float(result.total_cost_usd),
             int(result.duration_seconds),
+            question_embedding_str,
+            result.diversity_score_r1,
+            result.diversity_score_r2,
             session_id,
         )
 
@@ -333,6 +390,64 @@ async def search_similar_context(
     return [dict(r) for r in rows]
 
 
+async def search_similar_sessions(
+    pool: asyncpg.Pool,
+    query_embedding: list[float],
+    *,
+    top_k: int = RAG_TOP_K,
+    user_id: str | None = None,
+    exclude_ids: list[UUID] | None = None,
+) -> list[dict[str, Any]]:
+    """pgvector コサイン類似度で過去の熟議セッションを検索する（仕様書 F-021・設計書 §6.3）。
+
+    question_embedding が NULL のレコードは除外する。
+    status = 'completed' のセッションのみ対象とする（失敗・中断セッションを注入しない）。
+    exclude_ids を指定すると当該セッションを除外する（直近セッションとの重複排除用）。
+
+    Args:
+        pool:            asyncpg コネクションプール
+        query_embedding: 質問文のベクトル（長さ 1024・voyage-3）
+        top_k:           取得件数（既定: RAG_TOP_K=3）
+        user_id:         ユーザー ID（指定時に行フィルタ）
+        exclude_ids:     除外するセッション UUID リスト
+
+    Returns:
+        [{"session_id": UUID, "question": str, "conclusion": str, "similarity": float}, ...]
+    """
+    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+    args: list[object] = [embedding_str, top_k]
+
+    user_filter = ""
+    if user_id:
+        args.append(user_id)
+        user_filter = f" AND user_id = ${len(args)}"
+
+    exclude_filter = ""
+    if exclude_ids:
+        args.append([str(uid) for uid in exclude_ids])
+        exclude_filter = f" AND id != ALL(${len(args)}::uuid[])"
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                id AS session_id,
+                question,
+                third_solution ->> 'conclusion' AS conclusion,
+                1 - (question_embedding <=> $1::vector) AS similarity
+            FROM deliberation_sessions
+            WHERE status = 'completed'
+              AND question_embedding IS NOT NULL
+              AND third_solution IS NOT NULL
+              AND is_research = false{user_filter}{exclude_filter}
+            ORDER BY question_embedding <=> $1::vector
+            LIMIT $2
+            """,
+            *args,
+        )
+    return [dict(r) for r in rows]
+
+
 async def get_recent_sessions(
     pool: asyncpg.Pool,
     *,
@@ -368,7 +483,8 @@ async def get_recent_sessions(
                 created_at
             FROM deliberation_sessions
             WHERE status = 'completed'
-              AND third_solution IS NOT NULL{user_filter}
+              AND third_solution IS NOT NULL
+              AND is_research = false{user_filter}
             ORDER BY created_at DESC
             LIMIT $1
             """,
@@ -436,10 +552,12 @@ async def build_context_prompt(
     """RAG 文脈を構築してエージェントプロンプトへの注入用テキストを返す（設計書 §6.3）。
 
     フロー:
-        ① embed_text(question)                              — 質問をベクトル化
-        ② search_similar_context(pool, top_k=3, user_id)  — company_context から類似上位3件
-        ③ get_recent_sessions(pool, n=2, user_id)          — 直近2件の結論を取得
-        ④ テキスト結合（~5,000 tokens 以内）
+        ① get_company_profile()                            — 会社プロフィールを固定注入
+        ② embed_text(question)                             — 質問を一度だけベクトル化
+        ③ search_similar_context(pool, top_k=3, user_id)  — company_context から類似上位3件
+        ④ get_recent_sessions(pool, n=2, user_id)          — 直近2件の結論を取得
+        ⑤ search_similar_sessions(top_k=3, exclude_ids)   — 類似過去熟議 Top-3（直近2件を除外）
+        ⑥ テキスト結合（~5,000 tokens 以内）
 
     接続失敗時は空文字を返し、熟議は文脈なしで継続する（熟議全体を止めない設計）。
 
@@ -456,9 +574,17 @@ async def build_context_prompt(
     profile_text = await get_company_profile(pool, user_id=user_id)
 
     try:
+        # ② 質問を一度だけベクトル化し ③⑤ 両方に使い回す
         embedding = await embed_text(question, api_key=voyage_api_key)
+        # ③ company_context から類似コンテキスト
         similar = await search_similar_context(pool, embedding, user_id=user_id)
+        # ④ 直近セッション
         recent = await get_recent_sessions(pool, user_id=user_id)
+        # ⑤ 類似過去熟議（直近セッションとの重複を除外）
+        recent_ids = [UUID(str(s["id"])) for s in recent if s.get("id")]
+        similar_sessions = await search_similar_sessions(
+            pool, embedding, user_id=user_id, exclude_ids=recent_ids or None,
+        )
     except Exception:
         # 接続失敗時は文脈なしで継続（熟議全体を止めない）
         return profile_text  # プロフィールだけでも返す
@@ -489,6 +615,13 @@ async def build_context_prompt(
             q = str(s.get("question", ""))[:60]
             conclusion = s.get("conclusion") or "（未確定）"
             parts.append(f"- {dt_str} 「{q}」→ {conclusion}")
+
+    if similar_sessions:
+        parts.append("\n【類似の過去熟議（関連課題の結論）】")
+        for s in similar_sessions:
+            q = str(s.get("question", ""))[:60]
+            conclusion = s.get("conclusion") or "（未確定）"
+            parts.append(f"- 「{q}」→ {conclusion}")
 
     return "\n".join(parts)
 
