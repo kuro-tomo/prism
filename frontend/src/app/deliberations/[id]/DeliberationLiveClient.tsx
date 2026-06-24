@@ -103,7 +103,7 @@ export default function DeliberationLiveClient({ sessionId, title, question, mod
             </CardContent>
           </Card>
         ) : synthesis ? (
-          <SynthesisPanel synthesis={synthesis} />
+          <SynthesisPanel synthesis={synthesis} sessionId={sessionId} />
         ) : synthesisDraft ? (
           <Card>
             <CardHeader className="pb-3">

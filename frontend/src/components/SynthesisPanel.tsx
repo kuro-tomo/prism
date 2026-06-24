@@ -1,13 +1,50 @@
+import { useState, useEffect } from "react"
 import type { ThirdSolution } from "@/lib/api/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { AGENT_META } from "@/components/AgentCard"
 
 interface SynthesisPanelProps {
   synthesis: ThirdSolution
+  sessionId?: string
 }
 
-export function SynthesisPanel({ synthesis }: SynthesisPanelProps) {
+function useActionChecklist(sessionId: string | undefined, count: number, prefix: string) {
+  const key = sessionId ? `prism:checklist:${sessionId}:${prefix}` : null
+  const [checked, setChecked] = useState<boolean[]>(() => Array(count).fill(false))
+
+  useEffect(() => {
+    if (!key) return
+    try {
+      const stored = localStorage.getItem(key)
+      if (stored) {
+        const parsed: boolean[] = JSON.parse(stored)
+        // count と長さが異なる場合（項目数変更）は count に合わせてパディング・切り詰め
+        const adjusted = Array(count).fill(false).map((_, i) => parsed[i] ?? false)
+        setChecked(adjusted)
+      }
+    } catch { /* ignore */ }
+  }, [key, count])
+
+  const toggle = (i: number) => {
+    setChecked(prev => {
+      const next = [...prev]
+      next[i] = !next[i]
+      if (key) {
+        try { localStorage.setItem(key, JSON.stringify(next)) } catch { /* ignore */ }
+      }
+      return next
+    })
+  }
+
+  return { checked, toggle }
+}
+
+export function SynthesisPanel({ synthesis, sessionId }: SynthesisPanelProps) {
   const disclaimer = synthesis.disclaimer || "PRISMの分析に基づく提案です。"
+  const shortCount = synthesis.actions_short_term?.length ?? 0
+  const midCount = synthesis.actions_mid_term?.length ?? 0
+  const { checked: shortChecked, toggle: toggleShort } = useActionChecklist(sessionId, shortCount, "short")
+  const { checked: midChecked, toggle: toggleMid } = useActionChecklist(sessionId, midCount, "mid")
 
   return (
     <div className="space-y-4">
@@ -49,11 +86,18 @@ export function SynthesisPanel({ synthesis }: SynthesisPanelProps) {
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
                 短期アクション（即実行）
               </h4>
-              <ul className="space-y-1">
+              <ul className="space-y-2">
                 {synthesis.actions_short_term.map((a, i) => (
-                  <li key={i} className="flex gap-2 text-sm text-foreground/80">
-                    <span className="text-primary shrink-0">▶</span>
-                    <span>{a}</span>
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <button
+                      type="button"
+                      onClick={() => toggleShort(i)}
+                      className="mt-0.5 shrink-0 w-4 h-4 rounded border border-primary/50 flex items-center justify-center hover:bg-primary/10 transition-colors"
+                      aria-label={shortChecked[i] ? "未完了に戻す" : "完了にする"}
+                    >
+                      {shortChecked[i] && <span className="text-primary text-xs leading-none">✓</span>}
+                    </button>
+                    <span className={shortChecked[i] ? "line-through text-muted-foreground" : "text-foreground/80"}>{a}</span>
                   </li>
                 ))}
               </ul>
@@ -66,11 +110,18 @@ export function SynthesisPanel({ synthesis }: SynthesisPanelProps) {
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
                 中期ロードマップ
               </h4>
-              <ul className="space-y-1">
+              <ul className="space-y-2">
                 {synthesis.actions_mid_term.map((a, i) => (
-                  <li key={i} className="flex gap-2 text-sm text-foreground/80">
-                    <span className="text-muted-foreground shrink-0">→</span>
-                    <span>{a}</span>
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <button
+                      type="button"
+                      onClick={() => toggleMid(i)}
+                      className="mt-0.5 shrink-0 w-4 h-4 rounded border border-muted-foreground/40 flex items-center justify-center hover:bg-muted/20 transition-colors"
+                      aria-label={midChecked[i] ? "未完了に戻す" : "完了にする"}
+                    >
+                      {midChecked[i] && <span className="text-muted-foreground text-xs leading-none">✓</span>}
+                    </button>
+                    <span className={midChecked[i] ? "line-through text-muted-foreground" : "text-foreground/80"}>{a}</span>
                   </li>
                 ))}
               </ul>
