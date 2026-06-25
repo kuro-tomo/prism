@@ -28,13 +28,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import re
 import sys
 import time
-from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -51,7 +49,7 @@ from engine.memory import (
     save_debate_result,
     update_session_status,
 )
-from engine.utils import compute_novelty_flag
+from engine.utils import compute_fes, compute_novelty_flag
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -141,23 +139,27 @@ def parse_scenarios(md_path: Path) -> list[dict]:
 # ──────────────────────────────────────────────────────────────
 
 async def seed_scenarios(pool: asyncpg.Pool, scenarios: list[dict]) -> int:
-    """eval_scenarios にシナリオを投入する。重複は SKIP。"""
+    """eval_scenarios にシナリオを投入する。title が既存なら SKIP（冪等）。"""
     inserted = 0
     async with pool.acquire() as conn:
         for sc in scenarios:
-            result = await conn.execute(
+            existing = await conn.fetchval(
+                "SELECT scenario_id FROM arif.eval_scenarios WHERE title = $1",
+                sc["title"],
+            )
+            if existing:
+                continue
+            await conn.execute(
                 """
                 INSERT INTO arif.eval_scenarios (title, background, question, category)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT DO NOTHING
                 """,
                 sc["title"],
                 sc["background"],
                 sc["question"],
                 sc["category"],
             )
-            if result.endswith("1"):
-                inserted += 1
+            inserted += 1
     return inserted
 
 
@@ -197,14 +199,23 @@ async def insert_eval_run(
     phi_r1: float | None,
     phi_r2: float | None,
     novelty_flag: bool | None,
+    g_orig: int | None = None,
+    fes_score: float | None = None,
 ) -> None:
-    """eval_runs に実行ログを挿入する。g_orig/fes_score は人間評価後に更新。"""
+    """eval_runs に実行ログを挿入する。
+
+    prism 条件では guilford_scores["originality"] から g_orig/fes_score を
+    熟議直後に算出して保存する（案A・白書定義9.1の機械算出を実現）。
+    single_opus 条件・guilford_scores 欠落時は NULL のまま残し
+    compute_fes_batch（--compute-fes）で人間評価後に補完する。
+    """
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO arif.eval_runs
-                (scenario_id, session_id, condition, run_no, phi_r1, phi_r2, novelty_flag)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (scenario_id, session_id, condition, run_no,
+                 phi_r1, phi_r2, novelty_flag, g_orig, fes_score)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (scenario_id, condition, run_no) DO NOTHING
             """,
             scenario_id,
@@ -214,6 +225,8 @@ async def insert_eval_run(
             phi_r1,
             phi_r2,
             novelty_flag,
+            g_orig,
+            fes_score,
         )
 
 
@@ -323,6 +336,7 @@ async def run_one(
 
     logger.info("%s 開始", label)
     t0 = time.monotonic()
+    session_id: UUID | None = None
 
     for attempt in range(1, MAX_RETRIES + 2):
         try:
@@ -342,11 +356,22 @@ async def run_one(
                 phi_r1: float | None = result.diversity_score_r1
                 phi_r2: float | None = result.diversity_score_r2
                 novelty: bool | None = compute_novelty_flag(phi_r1, phi_r2)
+
+                # 案A: guilford_scores["originality"] から g_orig を機械算出（白書定義9.1）
+                g_orig: int | None = None
+                fes_score: float | None = None
+                if result.synthesis and result.synthesis.guilford_scores:
+                    orig = result.synthesis.guilford_scores.get("originality")
+                    if orig is not None and phi_r2 is not None:
+                        g_orig = int(orig)
+                        fes_score = compute_fes(phi_r2, g_orig, bool(novelty))
             else:
                 result = await run_single_opus(question, background, client)
                 phi_r1 = None
                 phi_r2 = None
                 novelty = None
+                g_orig = None
+                fes_score = None
 
             await save_debate_result(pool, session_id, result)
 
@@ -359,20 +384,33 @@ async def run_one(
                 phi_r1=phi_r1,
                 phi_r2=phi_r2,
                 novelty_flag=novelty,
+                g_orig=g_orig,
+                fes_score=fes_score,
             )
 
             elapsed = time.monotonic() - t0
             logger.info(
-                "%s 完了 — %.1fs | cost=$%.4f | phi_r1=%s phi_r2=%s",
+                "%s 完了 — %.1fs | cost=$%.4f | phi_r1=%s phi_r2=%s | g_orig=%s fes=%s",
                 label,
                 elapsed,
                 result.total_cost_usd,
                 f"{phi_r1:.3f}" if phi_r1 is not None else "N/A",
                 f"{phi_r2:.3f}" if phi_r2 is not None else "N/A",
+                str(g_orig) if g_orig is not None else "N/A",
+                f"{fes_score:.4f}" if fes_score is not None else "N/A",
             )
             return True
 
         except Exception as exc:
+            if session_id is not None:
+                try:
+                    await update_session_status(
+                        pool, session_id, STATUS_FAILED,
+                        error_message=str(exc)[:500],
+                    )
+                except Exception:
+                    pass
+                session_id = None  # 次の attempt で新規作成
             if attempt <= MAX_RETRIES:
                 logger.warning("%s エラー（attempt %d）: %s — リトライ", label, attempt, exc)
                 await asyncio.sleep(10.0)
@@ -411,16 +449,12 @@ async def run_batch(
         len(scenarios), conditions, total,
     )
 
+    pending = 0  # dry_run 時の「未実行」件数（done/skipped と分離）
+
     for sc in scenarios:
         scenario_id = UUID(str(sc["scenario_id"]))
         for condition in conditions:
             for run_no in range(1, 4):
-                # 実行済みチェック（dry_run 含む）
-                already_done = await run_already_done(pool, scenario_id, condition, run_no)
-                if already_done:
-                    skipped += 1
-                    continue
-
                 success = await run_one(
                     pool,
                     client,
@@ -433,19 +467,21 @@ async def run_batch(
                     dry_run=dry_run,
                 )
                 if dry_run:
-                    skipped += 1
+                    pending += 1
                 elif success:
                     done += 1
-                    if not dry_run:
-                        await asyncio.sleep(RATE_LIMIT_SLEEP)
+                    await asyncio.sleep(RATE_LIMIT_SLEEP)
                 else:
                     failed += 1
                     await asyncio.sleep(15.0)
 
-    logger.info(
-        "バッチ終了 — 実行:%d / スキップ:%d / 失敗:%d / 合計:%d",
-        done, skipped, failed, total,
-    )
+    if dry_run:
+        logger.info("dry-run 完了 — 未実行（実行予定）:%d / 合計:%d", pending, total)
+    else:
+        logger.info(
+            "バッチ終了 — 実行:%d / スキップ:%d / 失敗:%d / 合計:%d",
+            done, skipped, failed, total,
+        )
 
 
 # ──────────────────────────────────────────────────────────────
@@ -454,13 +490,14 @@ async def run_batch(
 
 async def compute_fes_batch(pool: asyncpg.Pool) -> None:
     """
-    eval_ratings から g_orig を集計し、eval_runs の fes_score を更新する。
+    g_orig が NULL の eval_runs（single_opus 条件・guilford_scores 欠落時の fallback）に対し、
+    eval_ratings の 4 次元平均を g_orig 代替として FES を補完する。
 
-    前提: 少なくとも 2 名の評価者が novelty 次元を評価済みであること。
-    g_orig = ROUND(AVG(score)) over usefulness/novelty/specificity/feasibility 4次元の平均
+    通常の prism 条件では guilford_scores["originality"] が熟議直後に記録済みゆえ
+    このバッチの処理対象外となる（WHERE g_orig IS NULL が空を返す）。
+
+    前提: 少なくとも 2 名の評価者が全 4 次元を評価済みであること。
     """
-    from engine.utils import compute_fes
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
