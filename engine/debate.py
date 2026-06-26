@@ -353,6 +353,7 @@ async def _call_agent(
     client: anthropic.AsyncAnthropic,
     model: str,
     sem: asyncio.Semaphore,
+    token_tracker: list[tuple[str, int, int]] | None = None,
 ) -> tuple[str, str | Exception]:
     """
     単体エージェントの API 呼び出し。
@@ -375,6 +376,8 @@ async def _call_agent(
                 ),
                 timeout=_TIMEOUT_SECONDS,
             )
+            if token_tracker is not None:
+                token_tracker.append((model, response.usage.input_tokens, response.usage.output_tokens))
             text: str = _extract_text(response)
             return agent.id, text
         except Exception as exc:  # noqa: BLE001
@@ -790,12 +793,13 @@ async def run_debate(
         mode=mode,
     )
     start_time = time.monotonic()
+    token_tracker: list[tuple[str, int, int]] = []
 
     # ── Round 1：全エージェントを完全並列呼び出し ──────────────────────
     logger.info("[Round 1] 開始 — %d 体並列 (model=%s)", len(roster), debate_model)
     r1_prompt = _build_round1_prompt(question, memory_context)
     r1_tasks = [
-        _call_agent(AGENTS[aid], r1_prompt, _client, debate_model, sem)
+        _call_agent(AGENTS[aid], r1_prompt, _client, debate_model, sem, token_tracker)
         for aid in roster
     ]
     r1_raw = await asyncio.gather(*r1_tasks, return_exceptions=True)
@@ -837,6 +841,7 @@ async def run_debate(
             "content": _build_summary_prompt(list(result.round1.items()), question),
         }],
     )
+    token_tracker.append((summary_model, summary_r1_msg.usage.input_tokens, summary_r1_msg.usage.output_tokens))
     summary_r1: str = _anonymize_summary(_extract_text(summary_r1_msg))
 
     # ── Round 2：生存エージェントのみ並列呼び出し（反論義務プロンプト） ──
@@ -844,7 +849,7 @@ async def run_debate(
     logger.info("[Round 2] 開始 — %d 体並列 (model=%s)", len(surviving_agents), debate_model)
     r2_prompt = _build_round2_prompt(question, summary_r1, memory_context)
     r2_tasks = [
-        _call_agent(AGENTS[aid], r2_prompt, _client, debate_model, sem)
+        _call_agent(AGENTS[aid], r2_prompt, _client, debate_model, sem, token_tracker)
         for aid in surviving_agents
     ]
     r2_raw = await asyncio.gather(*r2_tasks, return_exceptions=True)
@@ -881,6 +886,7 @@ async def run_debate(
             "content": _build_summary_prompt(r2_items, question),
         }],
     )
+    token_tracker.append((summary_model, summary_r2_msg.usage.input_tokens, summary_r2_msg.usage.output_tokens))
     summary_r2: str = _extract_text(summary_r2_msg)
 
     # ── Round 3：統合プロンプト → 第三の解 ───────────────────────────
@@ -900,6 +906,7 @@ async def run_debate(
         ),
         timeout=_TIMEOUT_SECONDS,
     )
+    token_tracker.append((synthesis_model, synthesis_msg.usage.input_tokens, synthesis_msg.usage.output_tokens))
     synthesis = _parse_synthesis(_extract_text(synthesis_msg))
     synthesis.consensus_risk = result.consensus_risk  # DebateResult と同期
 
@@ -919,10 +926,12 @@ async def run_debate(
             ),
             timeout=_TIMEOUT_SECONDS,
         )
+        token_tracker.append((synthesis_model, pm_msg.usage.input_tokens, pm_msg.usage.output_tokens))
         synthesis.failure_scenarios = _parse_pre_mortem(_extract_text(pm_msg))
 
     result.synthesis = synthesis
     result.duration_seconds = time.monotonic() - start_time
+    result.total_cost_usd = float(total_cost(token_tracker))
 
     logger.info(
         "[run_debate] 完了 — mode=%s, duration=%.1fs, round1=%d体, round2=%d体",
