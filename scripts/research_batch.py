@@ -10,6 +10,7 @@ scripts/research_batch.py — CFIM 論文評価バッチ実行（仕様書 F-022
     python scripts/research_batch.py --run                          # 両条件
     python scripts/research_batch.py --run --condition prism        # PRISM のみ
     python scripts/research_batch.py --run --condition single_opus  # 比較条件のみ
+    python scripts/research_batch.py --run --limit 2                # 先頭2シナリオのみ（パイロット）
     python scripts/research_batch.py --run --dry-run                # 未実行件数確認のみ
 
     # 進捗確認
@@ -38,6 +39,9 @@ from uuid import UUID
 
 import anthropic
 import asyncpg
+from dotenv import load_dotenv
+
+load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -76,7 +80,7 @@ CATEGORY_MAP: dict[str, str] = {
     "G": "digital",
 }
 
-SINGLE_OPUS_MODEL = "claude-opus-4-20250514"
+SINGLE_OPUS_MODEL = "claude-opus-4-6"
 SINGLE_OPUS_SYSTEM = (
     "あなたは経験豊富な経営コンサルタントです。"
     "社長から経営課題を提示されました。"
@@ -284,7 +288,7 @@ async def run_single_opus(
 
     input_tokens = message.usage.input_tokens
     output_tokens = message.usage.output_tokens
-    cost = input_tokens * (15.0 / 1_000_000) + output_tokens * (75.0 / 1_000_000)
+    cost = input_tokens * (5.0 / 1_000_000) + output_tokens * (25.0 / 1_000_000)
 
     synthesis = ThirdSolution(
         conclusion=response_text[:500] if response_text else "(応答なし)",
@@ -426,12 +430,19 @@ async def run_batch(
     *,
     conditions: list[str],
     dry_run: bool,
+    limit: int | None = None,
 ) -> None:
-    """全シナリオ × 条件 × 反復 の評価バッチを実行する。"""
+    """全シナリオ × 条件 × 反復 の評価バッチを実行する。
+    limit が指定された場合は先頭 N シナリオのみ実行（パイロット用）。
+    """
     scenarios = await load_scenarios(pool)
     if not scenarios:
         logger.error("eval_scenarios にシナリオがありません。先に --seed を実行してください。")
         return
+
+    if limit is not None:
+        scenarios = scenarios[:limit]
+        logger.info("--limit %d 指定: %d シナリオに絞って実行", limit, len(scenarios))
 
     total = len(scenarios) * len(conditions) * 3
     done = 0
@@ -559,6 +570,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="実行する条件（デフォルト: both）",
     )
     p.add_argument("--dry-run", action="store_true", help="実行せず未完了件数のみ確認")
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="先頭 N シナリオのみ実行（パイロット検証用。省略時は全件）",
+    )
     return p
 
 
@@ -586,7 +604,12 @@ async def main() -> None:
             conditions = (
                 ["prism", "single_opus"] if args.condition == "both" else [args.condition]
             )
-            await run_batch(pool, conditions=conditions, dry_run=args.dry_run)
+            await run_batch(
+                pool,
+                conditions=conditions,
+                dry_run=args.dry_run,
+                limit=args.limit,
+            )
 
         elif args.status:
             await print_status(pool)

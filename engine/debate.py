@@ -629,6 +629,44 @@ def _extract_text(message: anthropic.types.Message) -> str:
     return ""
 
 
+def _repair_json(text: str) -> str:
+    """
+    LLM出力JSONの文字列値内にある未エスケープ制御文字を修正する。
+    改行・タブ・CR が JSON 文字列値の中に生で入り込むと json.loads が失敗するため、
+    ステートマシンで in_string を追跡しながら \\n / \\r / \\t に置換する。
+    """
+    result: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            if c == "\\" and i + 1 < len(text):
+                result.append(c)
+                result.append(text[i + 1])
+                i += 2
+                continue
+            elif c == '"':
+                in_string = False
+                result.append(c)
+            elif c == "\n":
+                result.append("\\n")
+            elif c == "\r":
+                result.append("\\r")
+            elif c == "\t":
+                result.append("\\t")
+            else:
+                result.append(c)
+        else:
+            if c == '"':
+                in_string = True
+                result.append(c)
+            else:
+                result.append(c)
+        i += 1
+    return "".join(result)
+
+
 def _extract_json(text: str) -> str:
     """
     レスポンステキストから JSON 文字列を抽出する。
@@ -656,7 +694,11 @@ def _parse_synthesis(raw: str) -> ThirdSolution:
     JSON 解析失敗時はフォールバック（conclusion のみ）で続行する。
     """
     try:
-        data = json.loads(_extract_json(raw))
+        extracted = _extract_json(raw)
+        try:
+            data = json.loads(extracted)
+        except json.JSONDecodeError:
+            data = json.loads(_repair_json(extracted))
         return ThirdSolution(
             conclusion=str(data.get("conclusion", "")),
             rationale=[

@@ -2,11 +2,13 @@
 PRISM API — 認証ルート（Magic Link / Supabase Auth）
 
 仕様書 S-004・Opus 設計確定：Supabase Auth + Magic Link（Email 送信）。
-PKCE フロー（S256）：code_verifier をサーバー側変数 + Cookie で二重保持し、
+PKCE フロー（S256）：code_verifier をサーバー側変数 + Cookie + DB で三重保持し、
 /auth/callback でサーバーサイドトークン交換を行う。JS によるフラグメント読取不要。
+verifier 取得優先順：① Cookie ② サーバー変数 ③ DB（Render スピンダウン後の復元）
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import html
@@ -14,6 +16,7 @@ import logging
 import os
 import secrets
 
+import asyncpg
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -32,6 +35,48 @@ _PKCE_MAX_AGE  = 1800        # 30 分で失効（メール確認の猶予）
 
 # サーバー側 verifier キャッシュ（単一ユーザー用・Cookie の取れない環境からの送信に対応）
 _server_verifier: str = ""
+
+
+async def _store_verifier(verifier: str) -> None:
+    """verifier を arif.pending_verifiers に保存（Render スピンダウン対策）。失敗しても続行。"""
+    db_url = os.environ.get("SUPABASE_DB_URL")
+    if not db_url:
+        return
+    try:
+        conn = await asyncpg.connect(db_url)
+        try:
+            await conn.execute("DELETE FROM arif.pending_verifiers WHERE expires_at <= now()")
+            await conn.execute(
+                "INSERT INTO arif.pending_verifiers(verifier) VALUES($1) ON CONFLICT DO NOTHING",
+                verifier,
+            )
+        finally:
+            await conn.close()
+    except Exception as exc:
+        _log.warning("STORE_VERIFIER: DB error (non-fatal): %s", exc)
+
+
+async def _fetch_and_consume_verifier() -> str:
+    """DB から未失効 verifier を取得・削除して返す。なければ空文字。"""
+    db_url = os.environ.get("SUPABASE_DB_URL")
+    if not db_url:
+        return ""
+    try:
+        conn = await asyncpg.connect(db_url)
+        try:
+            row = await conn.fetchrow(
+                "DELETE FROM arif.pending_verifiers "
+                "WHERE verifier IN ("
+                "  SELECT verifier FROM arif.pending_verifiers "
+                "  WHERE expires_at > now() LIMIT 1"
+                ") RETURNING verifier"
+            )
+            return row["verifier"] if row else ""
+        finally:
+            await conn.close()
+    except Exception as exc:
+        _log.warning("FETCH_VERIFIER: DB error (non-fatal): %s", exc)
+        return ""
 
 
 def _make_pkce() -> tuple[str, str]:
@@ -71,7 +116,8 @@ async def send_magic_link(email: str = Form(...)) -> HTMLResponse:
     redirect_to  = f"{base_url}/auth/callback"
 
     verifier, challenge = _make_pkce()
-    _server_verifier = verifier  # サーバー側に保持
+    _server_verifier = verifier  # サーバー側に保持（同一プロセス継続中の高速パス）
+    asyncio.ensure_future(_store_verifier(verifier))  # DB 永続化（スピンダウン対策・非同期）
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -122,7 +168,7 @@ async def auth_callback(
     Magic Link クリック後のリダイレクト先。
     PKCE フロー：code + code_verifier でサーバーサイドトークン交換。
     HttpOnly Cookie をセットして / へリダイレクト（JS 不要）。
-    verifier 取得優先順：① Cookie ② サーバー変数
+    verifier 取得優先順：① Cookie ② サーバー変数 ③ DB（コールドスタート復元）
     """
     global _server_verifier
 
@@ -144,14 +190,22 @@ async def auth_callback(
             status_code=400,
         )
 
-    # verifier 取得：Cookie 優先、なければサーバー変数
+    # verifier 取得：① Cookie → ② サーバー変数 → ③ DB（コールドスタート復元）
     cookie_verifier = request.cookies.get(_PKCE_COOKIE, "")
-    verifier = cookie_verifier or _server_verifier
-    source   = "cookie" if cookie_verifier else ("server_var" if _server_verifier else "none")
+    if cookie_verifier:
+        verifier = cookie_verifier
+        source   = "cookie"
+    elif _server_verifier:
+        verifier = _server_verifier
+        source   = "server_var"
+    else:
+        verifier = await _fetch_and_consume_verifier()
+        source   = "db" if verifier else "none"
+
     _log.info("CALLBACK: code=%s... verifier_found=%s source=%s", code[:8], bool(verifier), source)
 
     # 消費したらサーバー変数をクリア
-    if verifier == _server_verifier:
+    if verifier and verifier == _server_verifier:
         _server_verifier = ""
 
     import httpx

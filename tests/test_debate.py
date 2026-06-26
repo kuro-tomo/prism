@@ -27,6 +27,7 @@ from engine.debate import (
     MIN_AGENTS_FOR_SYNTHESIS,
     _ANON_LABELS,
     _anonymize_summary,
+    _repair_json,
     AgentContentDeltaEvent,
     AgentDoneEvent,
     AgentErrorEvent,
@@ -890,3 +891,41 @@ class TestAnonymizeSummary:
             assert f"## {agent_id}" not in result
         for label in _ANON_LABELS.values():
             assert f"## {label}" in result
+
+
+class TestRepairJson:
+    """_repair_json — 文字列値内の未エスケープ制御文字修正テスト"""
+
+    def test_valid_json_unchanged(self) -> None:
+        """壊れていないJSONはそのまま返ること"""
+        s = '{"key": "value", "num": 42}'
+        assert _repair_json(s) == s
+
+    def test_unescaped_newline_in_string_is_escaped(self) -> None:
+        """文字列値内の生改行が \\n にエスケープされること"""
+        broken = '{"conclusion": "第一フェーズ\n第二フェーズ"}'
+        repaired = _repair_json(broken)
+        import json
+        data = json.loads(repaired)
+        assert "\n" in data["conclusion"]
+
+    def test_unescaped_tab_in_string_is_escaped(self) -> None:
+        """文字列値内の生タブが \\t にエスケープされること"""
+        broken = '{"text": "col1\tcol2"}'
+        repaired = _repair_json(broken)
+        import json
+        data = json.loads(repaired)
+        assert "\t" in data["text"]
+
+    def test_escaped_sequences_preserved(self) -> None:
+        """既存の \\n / \\t エスケープは二重エスケープされないこと"""
+        valid = '{"text": "line1\\nline2"}'
+        assert _repair_json(valid) == valid
+
+    def test_newline_outside_string_unchanged(self) -> None:
+        """文字列値の外の改行（整形用空白）は変更されないこと"""
+        formatted = '{\n  "key": "value"\n}'
+        repaired = _repair_json(formatted)
+        import json
+        data = json.loads(repaired)
+        assert data["key"] == "value"
