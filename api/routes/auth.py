@@ -25,7 +25,7 @@ _ALLOWED_EMAILS: set[str] = {
     if e.strip()
 }
 _PKCE_COOKIE   = "arif-cv"   # code_verifier 一時保管 Cookie 名
-_PKCE_MAX_AGE  = 600         # 10 分で失効（メール確認の猶予）
+_PKCE_MAX_AGE  = 1800        # 30 分で失効（メール確認の猶予）
 
 
 def _make_pkce() -> tuple[str, str]:
@@ -116,7 +116,7 @@ async def auth_callback(
     if error:
         return HTMLResponse(
             f'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
-            f'<title>ARIF — 認証エラー</title></head><body>'
+            f'<title>PRISM — 認証エラー</title></head><body>'
             f'<p style="font-family:sans-serif">認証エラー: {html.escape(error)}'
             f'<br><a href="/login">ログインに戻る</a></p></body></html>',
             status_code=400,
@@ -126,7 +126,7 @@ async def auth_callback(
         # PKCE フロー必須。code なしは正常ではないため拒否する
         return HTMLResponse(
             '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
-            '<title>ARIF — 認証エラー</title></head><body>'
+            '<title>PRISM — 認証エラー</title></head><body>'
             '<p style="font-family:sans-serif">認証コードが見つかりません。'
             '<a href="/login">再度ログインしてください</a></p></body></html>',
             status_code=400,
@@ -152,11 +152,22 @@ async def auth_callback(
             json={"auth_code": code, "code_verifier": verifier},
         )
         if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_code = html.escape(err_body.get("error_code", err_body.get("error", str(resp.status_code))))
+                err_msg  = html.escape(err_body.get("message", err_body.get("error_description", "不明")))
+            except Exception:
+                err_code, err_msg = str(resp.status_code), "レスポンス解析失敗"
+            _log.warning("CALLBACK: token_exchange failed status=%d verifier_found=%s code=%s msg=%s",
+                         resp.status_code, bool(verifier), err_code, err_msg)
             return HTMLResponse(
-                '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
-                '<title>ARIF — 認証エラー</title></head><body>'
-                '<p style="font-family:sans-serif">認証に失敗しました。'
-                '<a href="/login">再度お試しください</a></p></body></html>',
+                f'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
+                f'<title>PRISM — 認証エラー</title></head><body style="font-family:sans-serif;padding:2rem">'
+                f'<p>認証に失敗しました。</p>'
+                f'<p style="color:#f87171;font-size:.9rem">コード: {err_code}<br>詳細: {err_msg}'
+                f'<br>Cookie: {"あり" if verifier else "<b>なし（PKCEセッション切れ）</b>"}</p>'
+                f'<a href="/login">再度ログインしてください</a>'
+                f'</body></html>',
                 status_code=401,
             )
 
