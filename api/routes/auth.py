@@ -63,13 +63,15 @@ async def send_magic_link(email: str = Form(...)) -> HTMLResponse:
     redirect_to  = f"{base_url}/auth/callback"
 
     verifier, challenge = _make_pkce()
+    # verifier を redirect_to に埋め込む（ブラウザ外からの送信でも Cookie 不要になる）
+    redirect_to_with_cv = f"{redirect_to}?cv={verifier}"
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{supabase_url}/auth/v1/otp",
             headers={"apikey": supabase_key, "Content-Type": "application/json"},
             # redirect_to は URL クエリパラメータで渡す（GoTrue は body の options を読まない）
-            params={"redirect_to": redirect_to},
+            params={"redirect_to": redirect_to_with_cv},
             json={
                 "email": email,
                 "code_challenge":        challenge,
@@ -136,9 +138,12 @@ async def auth_callback(
     import logging
     _log = logging.getLogger("arif.auth")
 
-    verifier = request.cookies.get(_PKCE_COOKIE, "")
-    _log.info("CALLBACK: code=%s... verifier_found=%s cookies=%s",
-              code[:8], bool(verifier), list(request.cookies.keys()))
+    # Cookie 優先、なければ URL パラメータの cv にフォールバック
+    verifier = request.cookies.get(_PKCE_COOKIE, "") or request.query_params.get("cv", "")
+    _log.info("CALLBACK: code=%s... verifier_found=%s source=%s cookies=%s",
+              code[:8], bool(verifier),
+              "cookie" if request.cookies.get(_PKCE_COOKIE) else "url_param",
+              list(request.cookies.keys()))
 
     import httpx
 
