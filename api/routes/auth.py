@@ -1,8 +1,8 @@
 """
-ARIF API — 認証ルート（Magic Link / Supabase Auth）
+PRISM API — 認証ルート（Magic Link / Supabase Auth）
 
 仕様書 S-004・Opus 設計確定：Supabase Auth + Magic Link（Email 送信）。
-PKCE フロー（S256）：code_verifier を HttpOnly Cookie に保管し、
+PKCE フロー（S256）：code_verifier をサーバー側変数 + Cookie で二重保持し、
 /auth/callback でサーバーサイドトークン交換を行う。JS によるフラグメント読取不要。
 """
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import logging
 import os
 import secrets
 
@@ -17,6 +18,8 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_log = logging.getLogger("arif.auth")
 
 # カンマ区切りで複数アドレスを許可（例: "a@x.com,b@y.com"）
 _ALLOWED_EMAILS: set[str] = {
@@ -26,6 +29,9 @@ _ALLOWED_EMAILS: set[str] = {
 }
 _PKCE_COOKIE   = "arif-cv"   # code_verifier 一時保管 Cookie 名
 _PKCE_MAX_AGE  = 1800        # 30 分で失効（メール確認の猶予）
+
+# サーバー側 verifier キャッシュ（単一ユーザー用・Cookie の取れない環境からの送信に対応）
+_server_verifier: str = ""
 
 
 def _make_pkce() -> tuple[str, str]:
@@ -47,9 +53,11 @@ async def send_magic_link(email: str = Form(...)) -> HTMLResponse:
 
     PKCE フロー：
       - code_challenge を OTP リクエストに付与
-      - code_verifier を HttpOnly Cookie として保管
+      - code_verifier を Cookie（ブラウザ送信時）＋サーバー変数（curl 送信時）で二重保持
       - /auth/callback でサーバーサイドトークン交換
     """
+    global _server_verifier
+
     if _ALLOWED_EMAILS and email.lower() not in _ALLOWED_EMAILS:
         return HTMLResponse(
             '<p style="color:#f87171">このメールアドレスは許可されておりません。</p>'
@@ -63,15 +71,13 @@ async def send_magic_link(email: str = Form(...)) -> HTMLResponse:
     redirect_to  = f"{base_url}/auth/callback"
 
     verifier, challenge = _make_pkce()
-    # verifier を redirect_to に埋め込む（ブラウザ外からの送信でも Cookie 不要になる）
-    redirect_to_with_cv = f"{redirect_to}?cv={verifier}"
+    _server_verifier = verifier  # サーバー側に保持
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{supabase_url}/auth/v1/otp",
             headers={"apikey": supabase_key, "Content-Type": "application/json"},
-            # redirect_to は URL クエリパラメータで渡す（GoTrue は body の options を読まない）
-            params={"redirect_to": redirect_to_with_cv},
+            params={"redirect_to": redirect_to},
             json={
                 "email": email,
                 "code_challenge":        challenge,
@@ -88,7 +94,9 @@ async def send_magic_link(email: str = Form(...)) -> HTMLResponse:
             f'<p style="color:#f87171">送信に失敗しました（{resp.status_code}）。しばらくお待ちの上、再試行ください。</p>'
         )
 
-    # code_verifier を HttpOnly Cookie に保管（callback まで使用）
+    _log.info("MAGIC_LINK: sent to=%s verifier_stored=True", email)
+
+    # Cookie にも保管（ブラウザから送信した場合の主経路）
     response = HTMLResponse(
         '<p style="color:#4ade80">✓ 認証リンクを送信しました。メールをご確認ください。</p>'
     )
@@ -114,7 +122,10 @@ async def auth_callback(
     Magic Link クリック後のリダイレクト先。
     PKCE フロー：code + code_verifier でサーバーサイドトークン交換。
     HttpOnly Cookie をセットして / へリダイレクト（JS 不要）。
+    verifier 取得優先順：① Cookie ② サーバー変数
     """
+    global _server_verifier
+
     if error:
         return HTMLResponse(
             f'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
@@ -125,7 +136,6 @@ async def auth_callback(
         )
 
     if not code:
-        # PKCE フロー必須。code なしは正常ではないため拒否する
         return HTMLResponse(
             '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
             '<title>PRISM — 認証エラー</title></head><body>'
@@ -134,16 +144,15 @@ async def auth_callback(
             status_code=400,
         )
 
-    # PKCE フロー：code_verifier を Cookie から取得
-    import logging
-    _log = logging.getLogger("arif.auth")
+    # verifier 取得：Cookie 優先、なければサーバー変数
+    cookie_verifier = request.cookies.get(_PKCE_COOKIE, "")
+    verifier = cookie_verifier or _server_verifier
+    source   = "cookie" if cookie_verifier else ("server_var" if _server_verifier else "none")
+    _log.info("CALLBACK: code=%s... verifier_found=%s source=%s", code[:8], bool(verifier), source)
 
-    # Cookie 優先、なければ URL パラメータの cv にフォールバック
-    verifier = request.cookies.get(_PKCE_COOKIE, "") or request.query_params.get("cv", "")
-    _log.info("CALLBACK: code=%s... verifier_found=%s source=%s cookies=%s",
-              code[:8], bool(verifier),
-              "cookie" if request.cookies.get(_PKCE_COOKIE) else "url_param",
-              list(request.cookies.keys()))
+    # 消費したらサーバー変数をクリア
+    if verifier == _server_verifier:
+        _server_verifier = ""
 
     import httpx
 
@@ -163,14 +172,14 @@ async def auth_callback(
                 err_msg  = html.escape(err_body.get("message", err_body.get("error_description", "不明")))
             except Exception:
                 err_code, err_msg = str(resp.status_code), "レスポンス解析失敗"
-            _log.warning("CALLBACK: token_exchange failed status=%d verifier_found=%s code=%s msg=%s",
-                         resp.status_code, bool(verifier), err_code, err_msg)
+            _log.warning("CALLBACK: failed status=%d source=%s err=%s msg=%s",
+                         resp.status_code, source, err_code, err_msg)
             return HTMLResponse(
                 f'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
                 f'<title>PRISM — 認証エラー</title></head><body style="font-family:sans-serif;padding:2rem">'
                 f'<p>認証に失敗しました。</p>'
                 f'<p style="color:#f87171;font-size:.9rem">コード: {err_code}<br>詳細: {err_msg}'
-                f'<br>Cookie: {"あり" if verifier else "<b>なし（PKCEセッション切れ）</b>"}</p>'
+                f'<br>verifier 取得元: {source}</p>'
                 f'<a href="/login">再度ログインしてください</a>'
                 f'</body></html>',
                 status_code=401,
@@ -179,8 +188,7 @@ async def auth_callback(
         data          = resp.json()
         access_token  = data.get("access_token",  "")
         refresh_token = data.get("refresh_token", "")
-        _log.info("CALLBACK: token_exchange ok, at_len=%d rt_len=%d at_prefix=%s",
-                  len(access_token), len(refresh_token), access_token[:20])
+        _log.info("CALLBACK: ok source=%s at_len=%d", source, len(access_token))
 
     redirect = RedirectResponse(url="/", status_code=303)
     redirect.delete_cookie(_PKCE_COOKIE)
@@ -196,5 +204,3 @@ async def logout(response: Response) -> RedirectResponse:
     redirect.delete_cookie("sb-access-token")
     redirect.delete_cookie("sb-refresh-token")
     return redirect
-
-
