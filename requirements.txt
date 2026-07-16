@@ -14,7 +14,7 @@ httpx>=0.27.0               # Voyage AI embedding API（voyage-3）・FastAPI �
 supabase>=2.10.0
 
 # Database — asyncpg（高速非同期 PostgreSQL 接続・pgvector クエリ）
-asyncpg>=0.29.0
+asyncpg>=0.31.0
 
 # Utilities
 python-dotenv>=1.0.0
