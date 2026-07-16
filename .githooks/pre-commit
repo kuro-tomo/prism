@@ -1,0 +1,27 @@
+#!/bin/bash
+# forge-gates pre-commit: gitleaks（軽量・staged diffのみ）＋ R旗走査
+# 重い検査（型チェック・テスト）はpre-pushへ回し、commitは軽快に保つ。
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root=$(git rev-parse --show-toplevel)
+marker="$repo_root/.git/FORGE_RFLAG_DETECTED"
+rm -f "$marker"
+
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --no-banner -v 2>&1; then
+    echo ""
+    echo "拒否：gitleaksが秘密情報の疑いを検知した。"
+    exit 1
+  fi
+fi
+
+if ! "$hook_dir/rflag-scan.sh"; then
+  touch "$marker"
+  echo ""
+  echo "上記の変更にR旗（リスクフラグ）が検知された。"
+  echo "コミットメッセージ末尾に次のいずれかのトレーラーを含めること："
+  echo "  R-Flag: yes"
+  echo "  R-Flag: no (該当せぬと判断した理由)"
+fi
+
+exit 0

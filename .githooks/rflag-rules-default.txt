@@ -1,0 +1,28 @@
+# forge-gates R旗検知ルール（既定）
+# PATH:<正規表現>  … ステージ済みファイルパスに一致すれば発火
+# CONTENT:<正規表現> … 追加行（diffの+行）に一致すれば発火
+# 大文字小文字は区別せぬ（grep -iE）。# で始まる行・空行は無視。
+# 案件固有の追加は .forge/rflag-rules.txt に同じ書式で。
+
+PATH:stripe
+PATH:billing
+PATH:payment
+PATH:webhook
+PATH:(^|/)auth(/|\.|$)
+PATH:cookie
+PATH:session
+PATH:crypto
+PATH:migrations?/
+PATH:(^|/)\.env
+PATH:whitepaper
+PATH:e-?gov
+PATH:edinet
+
+CONTENT:set-cookie
+CONTENT:ALTER TABLE
+CONTENT:DROP TABLE
+CONTENT:jwt\.(sign|verify)
+CONTENT:bcrypt
+CONTENT:STRIPE_SECRET
+CONTENT:api[_-]?key\s*=
+CONTENT:process\.env\.[A-Z_]*SECRET

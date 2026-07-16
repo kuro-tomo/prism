@@ -1,0 +1,28 @@
+#!/bin/bash
+# forge-gates commit-msg: R旗マーカーがあれば、コミットメッセージにトレーラーを要求する
+
+repo_root=$(git rev-parse --show-toplevel)
+marker="$repo_root/.git/FORGE_RFLAG_DETECTED"
+msg_file="$1"
+
+[ -f "$marker" ] || exit 0
+
+if grep -qE '^R-Flag:[[:space:]]*(yes|no)' "$msg_file"; then
+  rm -f "$marker"
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+
+拒否：R旗検知済みの変更だが、コミットメッセージに
+"R-Flag: yes" または "R-Flag: no (理由)" のトレーラーがない。
+
+例：
+  git commit -m "$(cat <<'MSG'
+  変更概要
+
+  R-Flag: yes
+  MSG
+  )"
+EOF
+exit 1
