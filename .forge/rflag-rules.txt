@@ -1,0 +1,4 @@
+# PRISM固有のR旗規則（既定規則に追加で適用される）
+PATH:(^|/)debate/
+PATH:pkce
+PATH:verifier

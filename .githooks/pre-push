@@ -1,0 +1,58 @@
+#!/bin/bash
+# forge-gates pre-push: mainへのpush時のみ、型チェック・テストを実行する（/doneの中核をここへ移植）。
+# 案件固有のテストコマンドは .forge/gates.sh に置けば、そちらを優先して呼ぶ。
+# MEMORY.md追記の有無は警告のみ（非ブロック——文書行為への硬い拒否は--no-verify常用を招くため）。
+
+repo_root=$(git rev-parse --show-toplevel)
+
+pushing_main=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master) pushing_main=1 ;;
+  esac
+done
+
+if [ "$pushing_main" -eq 0 ]; then
+  exit 0
+fi
+
+echo "forge-gates pre-push: 既定ブランチへのpushを検知。検査を実行する..."
+fail=0
+
+custom_gate="$repo_root/.forge/gates.sh"
+if [ -x "$custom_gate" ]; then
+  echo "→ 案件固有ゲート（.forge/gates.sh）を実行..."
+  "$custom_gate" || fail=1
+else
+  # 汎用自動判定：ルート・frontend/・website/・backend/ を順に検分
+  for dir in "$repo_root" "$repo_root/frontend" "$repo_root/website"; do
+    if [ -f "$dir/package.json" ]; then
+      echo "→ [$(basename "$dir")] 型チェック..."
+      (cd "$dir" && npx tsc --noEmit) || fail=1
+    fi
+  done
+
+  for dir in "$repo_root" "$repo_root/backend"; do
+    if [ -f "$dir/requirements.txt" ] && [ -d "$dir/tests" ] || [ -f "$dir/pytest.ini" ]; then
+      echo "→ [$(basename "$dir")] pytest..."
+      (cd "$dir" && python3 -m pytest -q) || fail=1
+    fi
+  done
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "拒否：検査が失敗した。既定ブランチへの push を中止する。"
+  echo "（真にやむを得ぬ緊急時のみ、上様ご自身の手でご対応くださりませ）"
+  exit 1
+fi
+
+memory_file="$HOME/.claude/projects/-Users-MBP-Desktop/memory/MEMORY.md"
+repo_name=$(basename "$repo_root")
+today=$(date +%Y-%m-%d)
+if [ -f "$memory_file" ] && ! grep -q "$today" "$memory_file" 2>/dev/null; then
+  echo ""
+  echo "⚠ 警告：MEMORY.mdに本日日付のエントリが見当たらぬ。追記漏れなきかご確認を（警告のみ・pushは継続）。"
+fi
+
+exit 0
