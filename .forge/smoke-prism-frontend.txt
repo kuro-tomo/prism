@@ -1,0 +1,3 @@
+# forge-deploy 煙試験定義（prism-frontend）
+# 書式: PATH EXPECTED_CODE [SUBSTRING...]
+/login 200 type="email"
