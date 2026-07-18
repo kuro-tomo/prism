@@ -18,6 +18,8 @@ name: Deploy Gate prism-frontend (forge-deploy)
 
 on:
   deployment_status:
+  schedule:
+    - cron: '0 21 * * *' # 06:00 JST — デプロイに紐づかぬ日次の生存確認
 
 permissions:
   contents: read
@@ -99,3 +101,31 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "🚨 本番後煙試験FAIL: prism-frontend ($(date -u +%Y-%m-%dT%H:%M:%SZ))" \
             --body-file /tmp/incident_body_pn.md
+
+  daily-smoke-production:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run daily smoke test against production
+        id: smoke
+        run: |
+          bash forge-deploy/bin/smoke.sh "https://prism-frontend-azure.vercel.app" ".forge/smoke-prism-frontend.txt"
+      - name: File incident issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > /tmp/incident_body_daily.md << MDEOF
+          日次の定時煙試験（デプロイに紐づかぬ生存確認）が失敗仕った。
+          直近のデプロイとは無関係に発生した障害の可能性あり
+          （証明書失効・外部API障害・DB接続断等）。
+
+          **対象URL:** https://prism-frontend-azure.vercel.app
+          **ログ:** ${RUN_URL}
+          MDEOF
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🚨 日次煙試験FAIL: prism-frontend ($(date -u +%Y-%m-%dT%H:%M:%SZ))" \
+            --body-file /tmp/incident_body_daily.md
