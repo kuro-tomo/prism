@@ -1,0 +1,131 @@
+name: Deploy Gate prism-frontend (forge-deploy)
+
+# Vercelがpreview/production配備を完了すると GitHub Deployments API 経由で
+# deployment_status イベントを発火する（Vercelの GitHub 連携が有効な場合、標準機能）。
+# このワークフローはそれを受けて煙試験を実行し、結果を commit status として報告する。
+#
+# 一つのrepoに複数のVercel projectが紐づく構成（例: standbycrew・fornax）では、
+# deployment_statusイベント自体はどのVercel projectの配備かを直接教えてくれぬため、
+# target_urlに含まれるproject名（prism-frontend）で絞り込む。他projectの配備では
+# 全ジョブがno-op（if条件不成立）で即終了する。
+#
+# 敷設時に置換すること：
+#   prism-frontend      … Vercelプロジェクト名（ログ・issue表題・commit status文脈に使用）
+#   prism-frontend          … target_urlに含まれるproject識別文字列（例: matsukaze, remote-monitor）
+#   .forge/smoke-prism-frontend.txt         … .forge/smoke-<project>.txt
+#   VERCEL_AUTOMATION_BYPASS_SECRET_PRISM_FRONTEND … VERCEL_AUTOMATION_BYPASS_SECRET_<PROJECT> 形式のrepo secret名
+#                            （複数project分のbypass secretを1repoに同居させるため個別名が必要）
+
+on:
+  deployment_status:
+  schedule:
+    - cron: '0 21 * * *' # 06:00 JST — デプロイに紐づかぬ日次の生存確認
+
+permissions:
+  contents: read
+  statuses: write
+  issues: write
+
+jobs:
+  smoke-preview:
+    # environment は "Preview" 単独のこともあれば、1repoに複数Vercel projectが
+    # 紐づく場合は "Preview – <project>" のようにproject名が付与される（実挙動確認済み、
+    # 2026-07-17）。startsWithで両対応する。
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      startsWith(github.event.deployment_status.environment, 'Preview') &&
+      contains(github.event.deployment_status.target_url, 'prism-frontend')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke test against preview
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_PRISM_FRONTEND }}
+        run: |
+          bash forge-deploy/bin/smoke.sh "${{ github.event.deployment_status.target_url }}" ".forge/smoke-prism-frontend.txt"
+      - name: Report success status
+        if: success()
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.event.deployment.sha }}" \
+            -f state=success \
+            -f context="smoke-preview (prism-frontend)" \
+            -f description="煙試験PASS" \
+            -f target_url="${{ github.event.deployment_status.target_url }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Report failure status
+        if: failure()
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.event.deployment.sha }}" \
+            -f state=failure \
+            -f context="smoke-preview (prism-frontend)" \
+            -f description="煙試験FAIL — Actionsログを参照" \
+            -f target_url="${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  smoke-production:
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      startsWith(github.event.deployment_status.environment, 'Production') &&
+      contains(github.event.deployment_status.target_url, 'prism-frontend')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke test against production
+        id: smoke
+        run: |
+          bash forge-deploy/bin/smoke.sh "${{ github.event.deployment_status.target_url }}" ".forge/smoke-prism-frontend.txt"
+      - name: File incident issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_URL: ${{ github.event.deployment_status.target_url }}
+          COMMIT_SHA: ${{ github.event.deployment.sha }}
+          RUN_URL: ${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > /tmp/incident_body_pn.md << MDEOF
+          デプロイ後の本番煙試験が失敗仕った。
+
+          **対象URL:** ${TARGET_URL}
+          **コミット:** ${COMMIT_SHA}
+          **ログ:** ${RUN_URL}
+
+          ## ロールバック手順
+          \`\`\`
+          vercel rollback ${TARGET_URL}
+          \`\`\`
+          または Vercel ダッシュボード → Deployments → 直前の正常デプロイ → Promote to Production
+          MDEOF
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🚨 本番後煙試験FAIL: prism-frontend ($(date -u +%Y-%m-%dT%H:%M:%SZ))" \
+            --body-file /tmp/incident_body_pn.md
+
+  daily-smoke-production:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run daily smoke test against production
+        id: smoke
+        run: |
+          bash forge-deploy/bin/smoke.sh "https://prism-frontend-azure.vercel.app" ".forge/smoke-prism-frontend.txt"
+      - name: File incident issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > /tmp/incident_body_daily.md << MDEOF
+          日次の定時煙試験（デプロイに紐づかぬ生存確認）が失敗仕った。
+          直近のデプロイとは無関係に発生した障害の可能性あり
+          （証明書失効・外部API障害・DB接続断等）。
+
+          **対象URL:** https://prism-frontend-azure.vercel.app
+          **ログ:** ${RUN_URL}
+          MDEOF
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🚨 日次煙試験FAIL: prism-frontend ($(date -u +%Y-%m-%dT%H:%M:%SZ))" \
+            --body-file /tmp/incident_body_daily.md
