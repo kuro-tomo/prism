@@ -4,11 +4,41 @@ updates:
     directory: "/frontend"
     schedule:
       interval: "weekly"
+    groups:
+      version-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      security-minor-patch:
+        applies-to: security-updates
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      version-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      security-minor-patch:
+        applies-to: security-updates
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      version-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      security-minor-patch:
+        applies-to: security-updates
+        update-types:
+          - "minor"
+          - "patch"
