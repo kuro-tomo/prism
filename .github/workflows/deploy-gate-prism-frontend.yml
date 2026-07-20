@@ -74,6 +74,8 @@ jobs:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - name: Run smoke test against production
         id: smoke
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET_PRISM_FRONTEND }}
         run: |
           bash forge-deploy/bin/smoke.sh "${{ github.event.deployment_status.target_url }}" ".forge/smoke-prism-frontend.txt"
       - name: File incident issue on failure
