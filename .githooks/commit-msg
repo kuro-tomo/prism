@@ -1,18 +1,20 @@
 #!/bin/bash
 # forge-gates commit-msg: R旗マーカーがあれば、コミットメッセージにトレーラーを要求する
 
-repo_root=$(git rev-parse --show-toplevel)
-marker="$repo_root/.git/FORGE_RFLAG_DETECTED"
+# worktree内では.gitはファイルでありディレクトリではないため、pre-commitと
+# 同じく--absolute-git-dirでworktree固有の実ディレクトリを解決する（2026-07-22是正）。
+git_dir=$(git rev-parse --absolute-git-dir)
+marker="$git_dir/FORGE_RFLAG_DETECTED"
+remediation_marker="$git_dir/FORGE_OPEN_REMEDIATION_DETECTED"
 msg_file="$1"
 
-[ -f "$marker" ] || exit 0
+status=0
 
-if grep -qE '^R-Flag:[[:space:]]*(yes|no)' "$msg_file"; then
-  rm -f "$marker"
-  exit 0
-fi
-
-cat >&2 <<'EOF'
+if [ -f "$marker" ]; then
+  if grep -qE '^R-Flag:[[:space:]]*(yes|no)' "$msg_file"; then
+    rm -f "$marker"
+  else
+    cat >&2 <<'EOF'
 
 拒否：R旗検知済みの変更だが、コミットメッセージに
 "R-Flag: yes" または "R-Flag: no (理由)" のトレーラーがない。
@@ -25,4 +27,30 @@ cat >&2 <<'EOF'
   MSG
   )"
 EOF
-exit 1
+    status=1
+  fi
+fi
+
+if [ -f "$remediation_marker" ]; then
+  if grep -qE '^Remediation-Check:[[:space:]]*(covered|unrelated)' "$msg_file"; then
+    rm -f "$remediation_marker"
+  else
+    cat >&2 <<'EOF'
+
+拒否：記憶帳の未解決項目との関連が検知された変更だが、コミットメッセージに
+"Remediation-Check: covered" または "Remediation-Check: unrelated (理由)" の
+トレーラーがない。
+
+例：
+  git commit -m "$(cat <<'MSG'
+  変更概要
+
+  Remediation-Check: covered
+  MSG
+  )"
+EOF
+    status=1
+  fi
+fi
+
+exit $status

@@ -3,9 +3,15 @@
 # 重い検査（型チェック・テスト）はpre-pushへ回し、commitは軽快に保つ。
 
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root=$(git rev-parse --show-toplevel)
-marker="$repo_root/.git/FORGE_RFLAG_DETECTED"
-rm -f "$marker"
+# worktree内では.gitはファイル（本体repoへの参照）でありディレクトリではないため、
+# $repo_root/.git/xxx という道筋は静かに失敗する（touch/rmがエラーを出すのみで
+# 空振りし、マーカーが実際には作成されぬままcommit-msg側の検査も素通りしていた
+# 2026-07-22発覚の不具合）。--absolute-git-dirはworktree固有の実ディレクトリ
+# （.git/worktrees/<name>）を返すため、主リポジトリ・worktreeの両方で機能する。
+git_dir=$(git rev-parse --absolute-git-dir)
+marker="$git_dir/FORGE_RFLAG_DETECTED"
+remediation_marker="$git_dir/FORGE_OPEN_REMEDIATION_DETECTED"
+rm -f "$marker" "$remediation_marker"
 
 if command -v gitleaks >/dev/null 2>&1; then
   if ! gitleaks protect --staged --no-banner -v 2>&1; then
@@ -22,6 +28,14 @@ if ! "$hook_dir/rflag-scan.sh"; then
   echo "コミットメッセージ末尾に次のいずれかのトレーラーを含めること："
   echo "  R-Flag: yes"
   echo "  R-Flag: no (該当せぬと判断した理由)"
+fi
+
+if ! "$hook_dir/check-open-remediations.sh"; then
+  touch "$remediation_marker"
+  echo ""
+  echo "コミットメッセージ末尾に次のいずれかのトレーラーを含めること："
+  echo "  Remediation-Check: covered (今回の変更で包含済み)"
+  echo "  Remediation-Check: unrelated (無関係と判断した理由)"
 fi
 
 exit 0
