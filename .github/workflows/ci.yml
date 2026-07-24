@@ -49,3 +49,12 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  no-live-fire:
+    # 実弾統制・CI掃討（forge-gates v3.1）：許可表(.forge/sinks-allow.txt)に無いファイルが
+    # 外部発信の生砲口を含めば失敗する。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 実弾統制チェック（許可表外の生砲口を検出）
+        run: bash .githooks/no-live-fire-check.sh
