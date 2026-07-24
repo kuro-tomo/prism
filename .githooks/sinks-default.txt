@@ -1,0 +1,42 @@
+# forge-gates 実弾統制・砲口（sink）既定パターン
+# 「実弾」＝外部への不可逆作用（SMS・音声通話・メール送信・決済・注文・物理制御）。
+# 「砲口」＝その最終呼び出し点。ここに列挙するのは、生の外部発信呼び出しの痕跡。
+#
+# 各行は grep -E の正規表現（大文字小文字は区別する＝実際の呼び出し名に忠実に照合）。
+# # で始まる行・空行は無視。案件固有の追加砲口は .forge/sinks.txt に同じ書式で。
+#
+# 設計意図：呼出側は増殖するが砲口は少ない。ゆえにガードは砲口自身に持たせ（砲口封印）、
+# この表は「どこに生砲口があるか」の機械的な台帳として機能させる。コメント行は走査側で
+# 除外されるため、是正済みの旨をコメントで残しても偽陽性にはならぬ。
+
+# --- SMS / 音声通話（Twilio・AWS SNS・自前ラッパ）---
+# 注意：バレな `.messages.create` / `.calls.create` は用いぬ——AnthropicやOpenAIの
+# LLM SDK呼び出し（`client.messages.create`）と構文が同一で誤検知するため。LLM呼び出しは
+# トークン消費こそあれ外部への不可逆作用（実弾）ではない。Twilioの検知はパッケージ参照で行う。
+sns_service\.send_notification
+connect_service\.make_call
+twilio_service\.(send|call|notify)
+twilio\.rest
+from twilio
+import twilio
+Twilio(Rest)?Client
+
+# --- メール送信 ---
+smtplib\.SMTP
+sendgrid.*Client|SendGridAPIClient
+\.(send_email|send_raw_email)\(
+email_service\.send
+new Resend\(|\.emails\.send\(
+
+# --- 決済（Stripe）---
+# Python SDK（大文字始まり単数形）・Node SDK（小文字複数形）の双方に対応する
+# （2026-07-24発覚：fugaku/matsukazeがNode版`stripe.customers.create`等を持つのに
+# Python版パターンのみでは検知できず「砲口皆無」と誤判定していた）。
+stripe\.(Charge|PaymentIntent|Refund|Payout|Transfer|Subscription)\.(create|cancel|capture|modify)
+stripe\.checkout\.[Ss]essions?\.create
+stripe\.(customers|charges|paymentIntents|refunds|payouts|transfers|subscriptions|invoices)\.(create|cancel|capture|update|del|modify)\(
+
+# --- チャット／外部Webhook通知 ---
+hooks\.slack\.com
+api\.line\.me
+notify-api\.line\.me

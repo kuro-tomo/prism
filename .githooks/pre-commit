@@ -30,6 +30,23 @@ if ! "$hook_dir/rflag-scan.sh"; then
   echo "  R-Flag: no (該当せぬと判断した理由)"
 fi
 
+# 実弾統制・砲口走査（2026-07-24追加）：exit 2＝ハードブロック（即拒否）、exit 1＝軟R旗。
+sink_rc=0
+"$hook_dir/sink-scan.sh" || sink_rc=$?
+if [ "$sink_rc" -eq 2 ]; then
+  echo ""
+  echo "拒否：デモ/モック領域からの生砲口直接参照により commit を中止する。"
+  echo "（真にやむを得ぬ意図的な実弾デモは LIVE_FIRE.md 登録の上、上様ご自身の手でご対応くださりませ）"
+  exit 1
+elif [ "$sink_rc" -eq 1 ]; then
+  touch "$marker"
+  echo ""
+  echo "実弾（外部発信の生砲口）に触れる変更ゆえ、R旗トレーラーを要求する。"
+  echo "コミットメッセージ末尾に次のいずれかのトレーラーを含めること："
+  echo "  R-Flag: yes"
+  echo "  R-Flag: no (該当せぬと判断した理由)"
+fi
+
 if ! "$hook_dir/check-open-remediations.sh"; then
   touch "$remediation_marker"
   echo ""
