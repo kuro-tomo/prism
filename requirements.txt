@@ -23,4 +23,4 @@ aiosmtplib>=3.0.0             # メール通知（N-002・Phase 3.5）
 
 # Testing
 pytest>=8.3.0
-pytest-asyncio>=0.24.0
+pytest-asyncio>=1.4.0
